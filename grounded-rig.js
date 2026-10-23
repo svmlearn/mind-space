@@ -16,12 +16,23 @@ function frame(h, t, yaw) {
 }
 
 // Gait constants, in character units (the model is ~2 units tall at scale 1).
-const HIP = 0.89, // resting hip height
-  ANKLE = 0.16, // ankle height above ground when planted
-  SEG = 0.405, // thigh / shin length
-  REACH = 2 * SEG - 0.012, // keep a hint of knee bend: never fully straight, never stretched
-  SIDE = 0.185, // half stance width
-  HEAD_SCALE = 0.92; // slightly smaller head reads closer to the painted turnaround
+// These defaults are the hand-built character-v3.glb. A model can override any of them with
+// glTF extras: `GroundedHero.extras.gait` (numbers below) and `<bone>.extras.tail` (rest tail
+// position, next to the bone's rest head = its translation). Missing values fall back here.
+const DEFAULTS = {
+  hip: 0.89, // resting hip height
+  hipX: 0.185, // half distance between the hip joints
+  ankle: 0.16, // ankle height above ground when planted
+  seg: 0.405, // thigh / shin length
+  side: 0.185, // half stance width (where the feet are planted)
+  headScale: 0.92, // slightly smaller head reads closer to the painted turnaround
+  neck: 0.58, // hip -> neck
+  headLen: 0.55, // neck -> top of head
+  shoulder: [0.34, 0.48], // shoulder joint offset from the hip (x, y)
+  arm: [0.1, -0.45], // relaxed arm vector (outwards, down)
+  toe: 0.22, // ankle -> toe
+  headTilt: 0, // chin-up pitch (radians) so the face reads from the high camera
+};
 
 /*
  * Grounded rig.
@@ -38,6 +49,12 @@ const HIP = 0.89, // resting hip height
 export class GroundedRig {
   constructor(model, position, holder = null) {
     this.model = model;
+    let gait = {};
+    model.traverse(o => {
+      if (o.userData?.gait) gait = o.userData.gait;
+    });
+    const c = (this.cfg = { ...DEFAULTS, ...gait });
+    c.reach = 2 * c.seg - 0.012; // keep a hint of knee bend: never fully straight, never stretched
     this.holder = holder;
     this.scale = 1;
     this.world = position.clone(); // last on-screen position (world units)
@@ -68,8 +85,8 @@ export class GroundedRig {
       ],
     };
     for (const [s, x] of [
-      ['L', -SIDE],
-      ['R', SIDE],
+      ['L', -DEFAULTS.side],
+      ['R', DEFAULTS.side],
     ]) {
       rest['thigh' + s] = [
         [x, 0.91, 0],
@@ -87,7 +104,7 @@ export class GroundedRig {
         [Math.sign(x) * 0.34, 1.37, 0],
         [Math.sign(x) * 0.44, 0.91, 0],
       ];
-      this.feet[s] = { p: position.clone().add(V(x, ANKLE, 0)), yaw: 0 };
+      this.feet[s] = { p: position.clone().add(V(s === 'L' ? -c.side : c.side, c.ankle, 0)), yaw: 0 };
     }
     this.resetHolder();
     model.updateMatrixWorld(true);
@@ -95,8 +112,10 @@ export class GroundedRig {
       const bone = model.getObjectByName(n);
       if (!bone) throw Error('Missing bone ' + n);
       this.bones[n] = bone;
-      const h = V(...a),
-        t = V(...b);
+      // Rest pose from the model when it carries one (head = bone translation, tail = extras).
+      const own = Array.isArray(bone.userData?.tail),
+        h = own ? bone.position.clone().applyMatrix4(bone.parent.matrixWorld) : V(...a),
+        t = own ? V(...bone.userData.tail).applyMatrix4(bone.parent.matrixWorld) : V(...b);
       this.length[n] = h.distanceTo(t);
       this.correction[n] = frame(h, t, 0)
         .setPosition(0, 0, 0)
@@ -136,7 +155,8 @@ export class GroundedRig {
     return p.applyAxisAngle(UP, yaw);
   }
   sideTarget(side, p = this.position, yaw = this.yaw) {
-    return p.clone().add(this.rot(V(side === 'L' ? -SIDE : SIDE, ANKLE, 0), yaw));
+    const c = this.cfg;
+    return p.clone().add(this.rot(V(side === 'L' ? -c.side : c.side, c.ankle, 0), yaw));
   }
   setBone(n, h, t, yaw = this.yaw, s = 1) {
     const b = this.bones[n],
@@ -166,7 +186,7 @@ export class GroundedRig {
     return { period, swing: period * 0.8 };
   }
   startSwing(side, duration, end, lift) {
-    end.y = ANKLE;
+    end.y = this.cfg.ankle;
     this.swing = {
       side,
       t: 0,
@@ -215,7 +235,7 @@ export class GroundedRig {
       if (moving && s.t < s.duration * 0.75) {
         const remaining = s.duration - s.t;
         s.end = this.sideTarget(s.side, this.position.clone().addScaledVector(this.velocity, remaining + period - s.duration / 2));
-        s.end.y = ANKLE;
+        s.end.y = this.cfg.ankle;
         s.endYaw = this.yaw;
       }
       const u = Math.min(1, s.t / s.duration),
@@ -274,6 +294,8 @@ export class GroundedRig {
   }
   pose() {
     this.resetHolder();
+    const c = this.cfg,
+      REACH = c.reach;
     const s = this.swing,
       u = s ? Math.min(1, s.t / s.duration) : 0,
       active = s ? Math.sin(Math.PI * u) : 0,
@@ -286,24 +308,24 @@ export class GroundedRig {
     const hip = this.position.clone();
     hip.addScaledVector(right, stanceSign * 0.028 * active * (0.5 + 0.5 * walk));
     // Inverted pendulum bob: highest mid-swing, lowest at heel strike.
-    hip.y = HIP - 0.02 * walk + 0.022 * active * walk;
+    hip.y = c.hip - 0.02 * walk + 0.022 * active * walk;
     // Never let the legs over-stretch: drop the hips instead (no rubbery shins).
     for (const [side, x] of [
-      ['L', -SIDE],
-      ['R', SIDE],
+      ['L', -c.hipX],
+      ['R', c.hipX],
     ]) {
       const f = this.feet[side].p,
         joint = hip.clone().add(this.rot(V(x, 0.02, 0))),
         horiz = Math.hypot(f.x - joint.x, f.z - joint.z),
         maxY = f.y + Math.sqrt(Math.max(0, REACH * REACH - horiz * horiz)) - 0.02;
-      if (maxY < hip.y) hip.y = Math.max(HIP - 0.12, maxY);
+      if (maxY < hip.y) hip.y = Math.max(c.hip - 0.12, maxY);
     }
 
     // Torso: lean into the walk, slight roll towards the stance side.
     const lean = 0.05 * walk + 0.012 * active,
       top = hip
         .clone()
-        .add(V(0, 0.58, 0))
+        .add(V(0, c.neck, 0))
         .addScaledVector(fw, lean)
         .addScaledVector(right, stanceSign * 0.01 * active);
     this.setBone('body', hip, top);
@@ -312,13 +334,13 @@ export class GroundedRig {
     const headBase = top.clone();
     const headTop = headBase
       .clone()
-      .add(V(0, 0.55 * HEAD_SCALE, 0))
-      .addScaledVector(fw, -lean * 0.4);
-    this.setBone('head', headBase, headTop, look, HEAD_SCALE);
+      .add(V(0, c.headLen * c.headScale * Math.cos(c.headTilt), 0))
+      .addScaledVector(fw, -lean * 0.4 - c.headLen * c.headScale * Math.sin(c.headTilt));
+    this.setBone('head', headBase, headTop, look, c.headScale);
 
     for (const [side, x] of [
-      ['L', -SIDE],
-      ['R', SIDE],
+      ['L', -c.hipX],
+      ['R', c.hipX],
     ]) {
       const f = this.feet[side],
         h = hip.clone().add(this.rot(V(x, 0.02, 0))),
@@ -329,14 +351,14 @@ export class GroundedRig {
         knee = h
           .clone()
           .addScaledVector(dir, length / 2)
-          .addScaledVector(bend, Math.sqrt(Math.max(0.0004, SEG ** 2 - length ** 2 / 4)));
+          .addScaledVector(bend, Math.sqrt(Math.max(0.0004, c.seg ** 2 - length ** 2 / 4)));
       const ankle = h.clone().addScaledVector(dir, length);
       this.setBone('thigh' + side, h, knee);
       this.setBone('shin' + side, knee, ankle);
       // Swing foot: toe points down after push-off, then lifts slightly before heel strike.
       const pitch = s && s.side === side ? (u < 0.5 ? -0.32 : -0.18) * Math.sin(2 * Math.PI * u) : 0,
-        toe = this.rot(V(0, 0, 0.22 * Math.cos(pitch)), f.yaw);
-      toe.y = 0.22 * Math.sin(pitch);
+        toe = this.rot(V(0, 0, c.toe * Math.cos(pitch)), f.yaw);
+      toe.y = c.toe * Math.sin(pitch);
       this.setBone('foot' + side, ankle, ankle.clone().add(toe), f.yaw);
 
       // Arms swing opposite to the leg on the same side, scaled by how far that foot is
@@ -345,12 +367,12 @@ export class GroundedRig {
         armSwing = clamp(-footFwd * 0.55, -0.17, 0.17) * (0.35 + 0.65 * walk),
         sh = hip
           .clone()
-          .add(this.rot(V(Math.sign(x) * 0.34, 0.48, 0)))
+          .add(this.rot(V(Math.sign(x) * c.shoulder[0], c.shoulder[1], 0)))
           .addScaledVector(fw, lean * 0.8);
       this.setBone(
         'arm' + side,
         sh,
-        sh.clone().add(this.rot(V(Math.sign(x) * (0.1 - 0.02 * walk), -0.45 + Math.abs(armSwing) * 0.15, armSwing))),
+        sh.clone().add(this.rot(V(Math.sign(x) * (c.arm[0] - 0.02 * walk), c.arm[1] + Math.abs(armSwing) * 0.15, armSwing))),
       );
     }
     this.model.updateMatrixWorld(true);

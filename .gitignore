@@ -1,0 +1,14 @@
+# Local settings, credentials and generated working files
+.env
+.env.*
+!.env.example
+.openai/
+node_modules/
+.DS_Store
+__pycache__/
+*.pyc
+*.log
+*.blend1
+*.blend2
+playwright-report/
+test-results/

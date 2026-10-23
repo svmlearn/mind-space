@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>心灵空间 · 人物造型对照</title>
+<link rel="icon" href="data:,"><link rel="stylesheet" href="./preview.css">
+<script type="importmap">{"imports":{"three":"../vendor/three/three.module.js"}}</script>
+</head>
+<body>
+<header><div><p class="eyebrow">心灵空间 · 造型重建</p><h1>这一次，看实际模型</h1></div><span class="badge">静态模型 · 尚未接入走路</span></header>
+<main>
+<section class="model-panel" aria-label="Interactive 3D character preview">
+<div class="panel-heading"><div><span class="dot" id="status-dot"></span><span id="status" role="status" aria-live="polite">正在加载模型…</span></div><button id="reload" type="button">重新加载</button></div>
+<div id="viewport" tabindex="0" aria-label="3D character. Drag to rotate, scroll or pinch to zoom. Arrow keys rotate, plus and minus zoom, Home resets.">
+<div id="world"><img id="meadow-background" src="./assets/overhead-ground.webp" alt=""><div id="stage"></div><img id="meadow-foreground" src="./assets/grass-foreground.webp" alt=""></div>
+<div id="loading"><span class="spinner"></span><p id="loading-message">正在准备人物…</p></div>
+<div class="view-label" id="view-label">45° 草坪视角</div><div class="orbit-hint">拖动旋转 · 滚轮缩放</div>
+</div>
+<div class="paint-mode"><span>颜色呈现</span><button id="paint-faithful" aria-pressed="true">保留手绘色彩</button><button id="runtime-aces" aria-pressed="false">场景调色对照</button></div>
+<div class="head-pose"><span id="head-pose-label">头部姿态</span><button id="head-neutral" aria-pressed="false" disabled>自然姿态</button><button id="head-lookup" aria-pressed="true" disabled>稍微抬头</button></div>
+<nav class="views" aria-label="Camera views"><button data-view="front">正面</button><button data-view="left">左侧</button><button data-view="back">背面</button><button data-view="right">右侧</button><button data-view="meadow" aria-pressed="true">45° 草坪</button><button data-view="full">草坪全景</button></nav>
+<footer class="model-footer"><span id="model-stats">模型准备中</span><div><button id="zoom-out" aria-label="Zoom out">−</button><button id="zoom-in" aria-label="Zoom in">+</button><button id="reset">恢复视角</button></div></footer>
+</section>
+<aside class="reference-panel"><div class="reference-heading"><div><p class="eyebrow">已确认的方向</p><h2>概念图对照</h2></div><span>和左侧实际模型比较</span></div><a href="./assets/approved-concept.png" target="_blank" rel="noopener" aria-label="Open approved concept at full resolution"><img class="concept" src="./assets/approved-concept.png" alt="Approved painted concept: teal-haired character in a teal sweater, dark trousers and meadow game view"></a><p class="reference-caption">之前确认的概念图 · 不是实际模型截图</p><details><summary>制作参考：人物四面图</summary><a href="./assets/painted-turnaround.png" target="_blank" rel="noopener"><img src="./assets/painted-turnaround.png" alt="Production sheet showing front, left, back and right painted views"></a></details><div class="lighting-note"><strong>这是可旋转的实际三维模型</strong><p>先对照人物造型与手绘质感，还没有绑定走路动作，也未替换心灵空间主页。</p><p>背面衣摆仍有多余的绘画痕迹，侧脸和头发细节还需整理。当前先看整体方向；不要把它当作完成版。</p><details><summary>查看模型渲染图</summary><img src="./assets/render-preview.png" alt="实际模型的离线渲染预览，非浏览器截图"></details></div></aside>
+</main>
+<script type="module" src="./preview.js"></script>
+</body></html>

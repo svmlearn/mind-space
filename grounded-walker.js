@@ -10,6 +10,8 @@ const world = document.querySelector('#walk-world'),
 // Same depth cue the original 2D walker used (`.5 + (y - 12) / 140`), normalised so the
 // character keeps its current size at the starting spot (y = 77) and shrinks towards the tree.
 const depthScale = y => (0.5 + (y - 12) / 140) / (0.5 + 65 / 140);
+const HERO_URL = 'assets/meadow/hero-v4.glb',
+  FALLBACK_URL = 'assets/meadow/character-v3.glb';
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const map = (x, y) => new T.Vector3((x / 100 - 0.5) * W, 0, ((y / 100 - 0.5) * H) / Math.SQRT1_2);
 let rig,
@@ -116,15 +118,40 @@ async function activate() {
     scene.add(ground);
     blob = contactShadow();
     scene.add(blob);
-    const gltf = await new GLTFLoader().loadAsync('assets/meadow/character-v3.glb');
-    const sunView = sun.position.clone().normalize().transformDirection(camera.matrixWorldInverse);
-    gltf.scene.traverse(o => {
-      if (o.isMesh) {
-        o.castShadow = true;
-        o.receiveShadow = true;
-        o.material = paintedMaterial(o.material, sunView);
+    // Anime-style hero (hero-v4.glb, built from the painted turnaround) with the hand-built
+    // character-v3.glb as fallback: `?walker=v3` forces it, and it loads if v4 fails.
+    const loader = new GLTFLoader(),
+      wantV3 = new URLSearchParams(location.search).get('walker') === 'v3';
+    let gltf,
+      hero = false;
+    if (!wantV3) {
+      try {
+        gltf = await loader.loadAsync(HERO_URL);
+        hero = true;
+      } catch (e) {
+        gltf = null;
       }
+    }
+    if (!gltf) gltf = await loader.loadAsync(FALLBACK_URL);
+    stage.dataset.walker = hero ? 'v4' : 'v3';
+    const sunView = sun.position.clone().normalize().transformDirection(camera.matrixWorldInverse);
+    const meshes = [];
+    gltf.scene.traverse(o => {
+      if (o.isMesh) meshes.push(o);
     });
+    for (const o of meshes) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+      o.material = paintedMaterial(o.material, sunView, hero);
+      if (hero) {
+        // The generated texture is a little dark under the toon ramp, and the sun sits behind the
+        // character: a touch of self-light from the texture keeps the face readable.
+        o.material.color.setScalar(1.08);
+        o.material.emissive.setRGB(0.2, 0.17, 0.14);
+        o.material.emissiveMap = o.material.map;
+      }
+      if (hero && o.isSkinnedMesh) o.parent.add(outlineOf(o));
+    }
     const holder = new T.Group();
     holder.add(gltf.scene);
     scene.add(holder);
@@ -204,9 +231,48 @@ const ramp = (() => {
   return tex;
 })();
 
+// The hero's texture already carries painted shading, so its ramp is flatter (less double
+// shading): a high floor and one soft step.
+const heroRamp = (() => {
+  const n = 32,
+    data = new Uint8Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    const x = i / (n - 1),
+      t = Math.max(0, Math.min(1, (x - 0.3) / 0.16)),
+      v = 0.72 + 0.28 * t * t * (3 - 2 * t);
+    data.set([v * 255, v * 255, v * 255, 255], i * 4);
+  }
+  const tex = new T.DataTexture(data, n, 1);
+  tex.minFilter = tex.magFilter = T.LinearFilter;
+  tex.needsUpdate = true;
+  return tex;
+})();
+
+// Ink line for the hero: an inverted hull (back faces pushed out along the normal, in bind
+// space so it follows the skinning) in a deep teal that matches the painted line work.
+function outlineOf(mesh) {
+  const m = new T.MeshBasicMaterial({ color: '#16302f', side: T.BackSide });
+  m.onBeforeCompile = shader => {
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      '#include <begin_vertex>\n  transformed += normalize(normal) * 0.011;',
+    );
+  };
+  m.customProgramCacheKey = () => 'hero-outline';
+  const o = new T.SkinnedMesh(mesh.geometry, m);
+  o.name = mesh.name + 'Outline';
+  o.bind(mesh.skeleton, mesh.bindMatrix);
+  o.position.copy(mesh.position);
+  o.quaternion.copy(mesh.quaternion);
+  o.scale.copy(mesh.scale);
+  o.castShadow = false;
+  o.frustumCulled = false;
+  return o;
+}
+
 // Swap the PBR materials for toon materials with a warm sunset rim on the sun side.
 // Colours, vertex colours and the painted eye texture are kept.
-function paintedMaterial(src, sunView) {
+function paintedMaterial(src, sunView, hero = false) {
   const m = new T.MeshToonMaterial({
     name: src.name,
     color: src.color,
@@ -214,7 +280,7 @@ function paintedMaterial(src, sunView) {
     vertexColors: src.vertexColors,
     emissive: src.emissive,
     emissiveMap: src.emissiveMap,
-    gradientMap: ramp,
+    gradientMap: hero ? heroRamp : ramp,
     side: src.side,
     transparent: src.transparent,
     opacity: src.opacity,
@@ -231,13 +297,13 @@ function paintedMaterial(src, sunView) {
           vec3 viewDir = isOrthographic ? vec3(0.0, 0.0, 1.0) : normalize(vViewPosition);
           float fresnel = pow(1.0 - clamp(dot(normal, viewDir), 0.0, 1.0), 2.2);
           float sunSide = smoothstep(-0.15, 0.55, dot(normal, uSunView));
-          outgoingLight += uRim * fresnel * sunSide * 0.55 * diffuseColor.rgb;
-          outgoingLight += uRim * fresnel * sunSide * 0.08;
+          outgoingLight += uRim * fresnel * sunSide * ${hero ? '0.45' : '0.55'} * diffuseColor.rgb;
+          outgoingLight += uRim * fresnel * sunSide * ${hero ? '0.06' : '0.08'};
         }
         #include <opaque_fragment>`,
       );
   };
-  m.customProgramCacheKey = () => 'painted-toon-rim';
+  m.customProgramCacheKey = () => (hero ? 'painted-toon-rim-hero' : 'painted-toon-rim');
   return m;
 }
 

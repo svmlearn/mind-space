@@ -1,17 +1,192 @@
 import * as T from 'three';
-const UP=new T.Vector3(0,1,0),V=(x=0,y=0,z=0)=>new T.Vector3(x,y,z),smooth=x=>{x=Math.max(0,Math.min(1,x));return x*x*(3-2*x)},delta=(a,b)=>Math.atan2(Math.sin(b-a),Math.cos(b-a));
-function frame(h,t,yaw){const y=t.clone().sub(h).normalize(),right=V(Math.cos(yaw),0,-Math.sin(yaw)),x=right.addScaledVector(y,-right.dot(y)).normalize(),z=V().crossVectors(x,y).normalize();return new T.Matrix4().makeBasis(x,y,z).setPosition(h)}
-export class GroundedRig{
-constructor(model,position){this.model=model;this.position=position.clone();this.target=position.clone();this.yaw=0;this.targetYaw=0;this.velocity=V();this.feet={};this.swing=null;this.next='L';this.clock=0;this.moving=false;this.bones={};this.correction={};this.length={};const rest={body:[[0,.9,0],[0,1.48,0]],head:[[0,1.47,0],[0,2.02,0]]};for(const [s,x] of [['L',-.185],['R',.185]]){rest['thigh'+s]=[[x,.91,0],[x,.54,.04]];rest['shin'+s]=[[x,.54,.04],[x,.16,0]];rest['foot'+s]=[[x,.16,0],[x,.16,.22]];rest['arm'+s]=[[Math.sign(x)*.34,1.37,0],[Math.sign(x)*.44,.91,0]];this.feet[s]={p:position.clone().add(V(x,.16,0)),yaw:0}}
-model.updateMatrixWorld(true);for(const[n,[a,b]]of Object.entries(rest)){const bone=model.getObjectByName(n);if(!bone)throw Error('Missing bone '+n);this.bones[n]=bone;const h=V(...a),t=V(...b);this.length[n]=h.distanceTo(t);this.correction[n]=frame(h,t,0).setPosition(0,0,0).invert().multiply(bone.matrixWorld.clone().setPosition(0,0,0))}this.pose()}
-setTarget(p,moving){this.target.copy(p);this.moving=moving}
-face(yaw){this.targetYaw=yaw}
-rot(p,yaw=this.yaw){return p.applyAxisAngle(UP,yaw)}
-sideTarget(side,p=this.position,yaw=this.yaw){return p.clone().add(this.rot(V(side==='L'?-.185:.185,.16,0),yaw))}
-setBone(n,h,t,yaw=this.yaw){const b=this.bones[n],m=frame(h,t,yaw).multiply(this.correction[n]).multiply(new T.Matrix4().makeScale(1,h.distanceTo(t)/this.length[n],1));b.parent.updateWorldMatrix(true,false);b.parent.matrixWorld.clone().invert().multiply(m).decompose(b.position,b.quaternion,b.scale);b.updateWorldMatrix(false,false)}
-update(dt){this.clock+=dt;const old=this.position.clone();this.position.copy(this.target);this.velocity.copy(this.position).sub(old).multiplyScalar(dt?1/dt:0);this.yaw+=Math.max(-2.2*dt,Math.min(2.2*dt,delta(this.yaw,this.targetYaw)));const moving=this.moving&&this.velocity.length()>.01;let finished=false;
-if(this.swing){const s=this.swing;s.t+=dt;const u=Math.min(1,s.t/.14),v=smooth(u),f=this.feet[s.side];f.p.copy(s.start).lerp(s.end,v);f.p.y+=.12*Math.sin(Math.PI*u)**2;f.yaw=s.yaw+delta(s.yaw,s.endYaw)*v;if(u===1){f.p.copy(s.end);f.yaw=s.endYaw;this.swing=null;this.next=s.side==='L'?'R':'L';finished=true}}
-if(!this.swing&&!finished){let side=this.next;const desired=s=>this.sideTarget(s);const error=s=>this.feet[s].p.distanceTo(desired(s));if(error(side)<=(moving?.1:.055)&&error(side==='L'?'R':'L')>(moving?.1:.055))side=side==='L'?'R':'L';const turn=Math.abs(delta(this.feet[side].yaw,this.yaw));if(error(side)>(moving?.11:.055)||turn>.15){const end=desired(side);if(moving)end.addScaledVector(this.velocity,.22);end.y=.16;this.swing={side,t:0,start:this.feet[side].p.clone(),end,yaw:this.feet[side].yaw,endYaw:this.yaw};}}
-this.pose();return this.moving||!!this.swing||Math.abs(delta(this.yaw,this.targetYaw))>.002||['L','R'].some(s=>this.feet[s].p.distanceTo(this.sideTarget(s))>.055||Math.abs(delta(this.feet[s].yaw,this.yaw))>.15)}
-pose(){const active=this.swing?Math.sin(Math.PI*Math.min(1,this.swing.t/.14)):0,hip=this.position.clone().add(V(0,.89+.014*active,0));this.setBone('body',hip,hip.clone().add(V(.008*active,.58,0)));this.setBone('head',hip.clone().add(V(0,.58,0)),hip.clone().add(V(0,1.13,0)));for(const[s,x]of[['L',-.185],['R',.185]]){const f=this.feet[s],h=hip.clone().add(this.rot(V(x,.02,0))),d=f.p.clone().sub(h),length=Math.min(.809,d.length()),dir=d.clone().normalize(),fw=this.rot(V(0,0,1)),bend=fw.addScaledVector(dir,-fw.dot(dir)).normalize(),k=h.clone().add(f.p).multiplyScalar(.5).addScaledVector(bend,Math.sqrt(Math.max(.001,.405**2-length**2/4)));this.setBone('thigh'+s,h,k);this.setBone('shin'+s,k,f.p);this.setBone('foot'+s,f.p,f.p.clone().add(this.rot(V(0,0,.22),f.yaw)),f.yaw);const sh=hip.clone().add(this.rot(V(Math.sign(x)*.34,.48,0))),swing=(this.swing?(this.swing.side===s?1:-1)*active*.12:0);this.setBone('arm'+s,sh,sh.clone().add(this.rot(V(Math.sign(x)*.10,-.45,-swing))))}this.model.updateMatrixWorld(true)}
+const UP = new T.Vector3(0, 1, 0),
+  V = (x = 0, y = 0, z = 0) => new T.Vector3(x, y, z),
+  smooth = x => {
+    x = Math.max(0, Math.min(1, x));
+    return x * x * (3 - 2 * x);
+  },
+  delta = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
+function frame(h, t, yaw) {
+  const y = t.clone().sub(h).normalize(),
+    right = V(Math.cos(yaw), 0, -Math.sin(yaw)),
+    x = right.addScaledVector(y, -right.dot(y)).normalize(),
+    z = V().crossVectors(x, y).normalize();
+  return new T.Matrix4().makeBasis(x, y, z).setPosition(h);
+}
+export class GroundedRig {
+  constructor(model, position) {
+    this.model = model;
+    this.position = position.clone();
+    this.target = position.clone();
+    this.yaw = 0;
+    this.targetYaw = 0;
+    this.velocity = V();
+    this.feet = {};
+    this.swing = null;
+    this.next = 'L';
+    this.clock = 0;
+    this.moving = false;
+    this.bones = {};
+    this.correction = {};
+    this.length = {};
+    const rest = {
+      body: [
+        [0, 0.9, 0],
+        [0, 1.48, 0],
+      ],
+      head: [
+        [0, 1.47, 0],
+        [0, 2.02, 0],
+      ],
+    };
+    for (const [s, x] of [
+      ['L', -0.185],
+      ['R', 0.185],
+    ]) {
+      rest['thigh' + s] = [
+        [x, 0.91, 0],
+        [x, 0.54, 0.04],
+      ];
+      rest['shin' + s] = [
+        [x, 0.54, 0.04],
+        [x, 0.16, 0],
+      ];
+      rest['foot' + s] = [
+        [x, 0.16, 0],
+        [x, 0.16, 0.22],
+      ];
+      rest['arm' + s] = [
+        [Math.sign(x) * 0.34, 1.37, 0],
+        [Math.sign(x) * 0.44, 0.91, 0],
+      ];
+      this.feet[s] = { p: position.clone().add(V(x, 0.16, 0)), yaw: 0 };
+    }
+    model.updateMatrixWorld(true);
+    for (const [n, [a, b]] of Object.entries(rest)) {
+      const bone = model.getObjectByName(n);
+      if (!bone) throw Error('Missing bone ' + n);
+      this.bones[n] = bone;
+      const h = V(...a),
+        t = V(...b);
+      this.length[n] = h.distanceTo(t);
+      this.correction[n] = frame(h, t, 0)
+        .setPosition(0, 0, 0)
+        .invert()
+        .multiply(bone.matrixWorld.clone().setPosition(0, 0, 0));
+    }
+    this.pose();
+  }
+  setTarget(p, moving) {
+    this.target.copy(p);
+    this.moving = moving;
+  }
+  face(yaw) {
+    this.targetYaw = yaw;
+  }
+  rot(p, yaw = this.yaw) {
+    return p.applyAxisAngle(UP, yaw);
+  }
+  sideTarget(side, p = this.position, yaw = this.yaw) {
+    return p.clone().add(this.rot(V(side === 'L' ? -0.185 : 0.185, 0.16, 0), yaw));
+  }
+  setBone(n, h, t, yaw = this.yaw) {
+    const b = this.bones[n],
+      m = frame(h, t, yaw)
+        .multiply(this.correction[n])
+        .multiply(new T.Matrix4().makeScale(1, h.distanceTo(t) / this.length[n], 1));
+    b.parent.updateWorldMatrix(true, false);
+    b.parent.matrixWorld.clone().invert().multiply(m).decompose(b.position, b.quaternion, b.scale);
+    b.updateWorldMatrix(false, false);
+  }
+  update(dt) {
+    this.clock += dt;
+    const old = this.position.clone();
+    this.position.copy(this.target);
+    this.velocity
+      .copy(this.position)
+      .sub(old)
+      .multiplyScalar(dt ? 1 / dt : 0);
+    this.yaw += Math.max(-2.2 * dt, Math.min(2.2 * dt, delta(this.yaw, this.targetYaw)));
+    const moving = this.moving && this.velocity.length() > 0.01;
+    let finished = false;
+    if (this.swing) {
+      const s = this.swing;
+      s.t += dt;
+      const u = Math.min(1, s.t / 0.14),
+        v = smooth(u),
+        f = this.feet[s.side];
+      f.p.copy(s.start).lerp(s.end, v);
+      f.p.y += 0.12 * Math.sin(Math.PI * u) ** 2;
+      f.yaw = s.yaw + delta(s.yaw, s.endYaw) * v;
+      if (u === 1) {
+        f.p.copy(s.end);
+        f.yaw = s.endYaw;
+        this.swing = null;
+        this.next = s.side === 'L' ? 'R' : 'L';
+        finished = true;
+      }
+    }
+    if (!this.swing && !finished) {
+      let side = this.next;
+      const desired = s => this.sideTarget(s);
+      const error = s => this.feet[s].p.distanceTo(desired(s));
+      if (error(side) <= (moving ? 0.1 : 0.055) && error(side === 'L' ? 'R' : 'L') > (moving ? 0.1 : 0.055))
+        side = side === 'L' ? 'R' : 'L';
+      const turn = Math.abs(delta(this.feet[side].yaw, this.yaw));
+      if (error(side) > (moving ? 0.11 : 0.055) || turn > 0.15) {
+        const end = desired(side);
+        if (moving) end.addScaledVector(this.velocity, 0.22);
+        end.y = 0.16;
+        this.swing = {
+          side,
+          t: 0,
+          start: this.feet[side].p.clone(),
+          end,
+          yaw: this.feet[side].yaw,
+          endYaw: this.yaw,
+        };
+      }
+    }
+    this.pose();
+    return (
+      this.moving ||
+      !!this.swing ||
+      Math.abs(delta(this.yaw, this.targetYaw)) > 0.002 ||
+      ['L', 'R'].some(
+        s =>
+          this.feet[s].p.distanceTo(this.sideTarget(s)) > 0.055 ||
+          Math.abs(delta(this.feet[s].yaw, this.yaw)) > 0.15,
+      )
+    );
+  }
+  pose() {
+    const active = this.swing ? Math.sin(Math.PI * Math.min(1, this.swing.t / 0.14)) : 0,
+      hip = this.position.clone().add(V(0, 0.89 + 0.014 * active, 0));
+    this.setBone('body', hip, hip.clone().add(V(0.008 * active, 0.58, 0)));
+    this.setBone('head', hip.clone().add(V(0, 0.58, 0)), hip.clone().add(V(0, 1.13, 0)));
+    for (const [s, x] of [
+      ['L', -0.185],
+      ['R', 0.185],
+    ]) {
+      const f = this.feet[s],
+        h = hip.clone().add(this.rot(V(x, 0.02, 0))),
+        d = f.p.clone().sub(h),
+        length = Math.min(0.809, d.length()),
+        dir = d.clone().normalize(),
+        fw = this.rot(V(0, 0, 1)),
+        bend = fw.addScaledVector(dir, -fw.dot(dir)).normalize(),
+        k = h
+          .clone()
+          .add(f.p)
+          .multiplyScalar(0.5)
+          .addScaledVector(bend, Math.sqrt(Math.max(0.001, 0.405 ** 2 - length ** 2 / 4)));
+      this.setBone('thigh' + s, h, k);
+      this.setBone('shin' + s, k, f.p);
+      this.setBone('foot' + s, f.p, f.p.clone().add(this.rot(V(0, 0, 0.22), f.yaw)), f.yaw);
+      const sh = hip.clone().add(this.rot(V(Math.sign(x) * 0.34, 0.48, 0))),
+        swing = this.swing ? (this.swing.side === s ? 1 : -1) * active * 0.12 : 0;
+      this.setBone('arm' + s, sh, sh.clone().add(this.rot(V(Math.sign(x) * 0.1, -0.45, -swing))));
+    }
+    this.model.updateMatrixWorld(true);
+  }
 }

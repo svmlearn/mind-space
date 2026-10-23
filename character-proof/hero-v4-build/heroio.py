@@ -32,7 +32,7 @@ def texel_map(P,UV,F,res):
         yy=(ys[m]-.5).astype(int); xx=(xs[m]-.5).astype(int)
         q=P[F[f]]; pos[yy,xx]=l1[m,None]*q[0]+l2[m,None]*q[1]+l3[m,None]*q[2]; fid[yy,xx]=f
     return pos,fid
-def save(path,P,UV,F,img,N=None,skin=None,name='MeadowCharacter',jpeg=None):
+def save(path,P,UV,F,img,N=None,skin=None,name='MeadowCharacter',jpeg=None,emis=None,extra_attr=None):
     """skin: dict(joints=[(name,head_xyz)], J=(n,4) uint8, W=(n,4) float)"""
     g=pygltflib.GLTF2(); blob=bytearray(); g.asset=pygltflib.Asset(version='2.0',generator='mind-space build_hero.py')
     def add(arr,target=None,typ=None,comp=None,minmax=False):
@@ -47,13 +47,22 @@ def save(path,P,UV,F,img,N=None,skin=None,name='MeadowCharacter',jpeg=None):
     if N is not None: attrs.NORMAL=add(N.astype(np.float32),34962,'VEC3',5126)
     if skin:
         attrs.JOINTS_0=add(skin['J'].astype(np.uint8),34962,'VEC4',5121); attrs.WEIGHTS_0=add(skin['W'].astype(np.float32),34962,'VEC4',5126)
+    if extra_attr:
+        for k_,v_ in extra_attr.items(): setattr(attrs,k_,add(v_.astype(np.float32).reshape(-1),34962,'SCALAR',5126))
     idx=add(F.astype(np.uint32).reshape(-1),34963,'SCALAR',5125)
     if jpeg: ok,png=cv2.imencode('.jpg',img,[cv2.IMWRITE_JPEG_QUALITY,jpeg]); mt='image/jpeg'
     else: ok,png=cv2.imencode('.png',img); mt='image/png'
     iv=add(np.frombuffer(png.tobytes(),np.uint8))
     g.images=[pygltflib.Image(bufferView=iv,mimeType=mt)]; g.samplers=[pygltflib.Sampler(magFilter=9729,minFilter=9987,wrapS=33071,wrapT=33071)]
     g.textures=[pygltflib.Texture(source=0,sampler=0)]
-    g.materials=[pygltflib.Material(name='hero',pbrMetallicRoughness=pygltflib.PbrMetallicRoughness(baseColorTexture=pygltflib.TextureInfo(index=0),metallicFactor=0.0,roughnessFactor=0.9),doubleSided=DOUBLE)]
+    mat=pygltflib.Material(name='hero',pbrMetallicRoughness=pygltflib.PbrMetallicRoughness(baseColorTexture=pygltflib.TextureInfo(index=0),metallicFactor=0.0,roughnessFactor=0.9),doubleSided=DOUBLE)
+    if emis is not None:
+        # self-light map: lets the face/skin glow a little more than the clothes in the dim scene
+        ok,eb=cv2.imencode('.jpg',emis,[cv2.IMWRITE_JPEG_QUALITY,88])
+        g.images.append(pygltflib.Image(bufferView=add(np.frombuffer(eb.tobytes(),np.uint8)),mimeType='image/jpeg'))
+        g.textures.append(pygltflib.Texture(source=1,sampler=0))
+        mat.emissiveTexture=pygltflib.TextureInfo(index=1); mat.emissiveFactor=[1.0,1.0,1.0]
+    g.materials=[mat]
     g.meshes=[pygltflib.Mesh(name=name,primitives=[pygltflib.Primitive(attributes=attrs,indices=idx,material=0)])]
     if skin:
         nodes=[]; jl=skin['joints']
@@ -72,7 +81,7 @@ def save(path,P,UV,F,img,N=None,skin=None,name='MeadowCharacter',jpeg=None):
         g.skins=[pygltflib.Skin(joints=list(range(0,len(jl)+1)),inverseBindMatrices=ia)]
         g.nodes.append(pygltflib.Node(name=name,mesh=0,skin=0))
         g.nodes.append(pygltflib.Node(name='GroundedHero',children=[len(g.nodes)-1,0]))
-        if 'gait' in skin: g.nodes[-1].extras={'gait':skin['gait']}
+        if 'gait' in skin: g.nodes[-1].extras={k_:skin[k_] for k_ in ('gait','eyes') if k_ in skin}
         g.scenes=[pygltflib.Scene(nodes=[len(g.nodes)-1])]
     else:
         g.nodes=[pygltflib.Node(name=name,mesh=0)]; g.nodes.append(pygltflib.Node(name='GroundedHero',children=[0])); g.scenes=[pygltflib.Scene(nodes=[1])]

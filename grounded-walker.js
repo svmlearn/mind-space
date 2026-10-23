@@ -25,7 +25,26 @@ let rig,
   last = 0,
   pct = [64, 77],
   moving = false,
-  ready = false;
+  ready = false,
+  eyes = null, // hero-v4 eye boxes (glTF extras) for the blink
+  blinkStart = 0,
+  blinkHeld = false;
+// Blink: a short burst of frames every few seconds while the hero stands visible; the render
+// loop still sleeps in between, and reduced motion turns it off.
+const blinkU = { value: 0 },
+  BLINK_MS = 170;
+function scheduleBlink() {
+  setTimeout(
+    () => {
+      if (ready && eyes && !blinkHeld && !hidden() && !reduceMotion.matches && !blinkStart) {
+        blinkStart = performance.now();
+        kick();
+      }
+      scheduleBlink();
+    },
+    2600 + Math.random() * 3400,
+  );
+}
 const stage = document.createElement('div');
 stage.id = 'grounded-stage';
 world.insertBefore(stage, world.querySelector('#tree-place'));
@@ -62,8 +81,15 @@ function tick(t) {
     grass.setShadow(w.x, w.z, -1.07 * s, 0.8 * s);
     settling = grass.update(dt, w.x, w.z, rig.velocity.length() > 0.12, s);
   }
+  let blinking = false;
+  if (blinkStart) {
+    const u = (t - blinkStart) / BLINK_MS;
+    blinking = u < 1;
+    blinkU.value = blinking ? Math.sin(Math.PI * Math.max(0, u)) : 0;
+    if (!blinking) blinkStart = 0;
+  }
   renderer.render(scene, camera);
-  if (active || settling) frame = requestAnimationFrame(tick);
+  if (active || settling || blinking) frame = requestAnimationFrame(tick);
   else last = 0;
 }
 function kick() {
@@ -138,17 +164,23 @@ async function activate() {
     const meshes = [];
     gltf.scene.traverse(o => {
       if (o.isMesh) meshes.push(o);
+      if (hero && o.userData.eyes) eyes = o.userData.eyes;
     });
     for (const o of meshes) {
       o.castShadow = true;
       o.receiveShadow = true;
-      o.material = paintedMaterial(o.material, sunView, hero);
+      o.material = paintedMaterial(o.material, sunView, hero, hero ? eyes : null);
       if (hero) {
         // The generated texture is a little dark under the toon ramp, and the sun sits behind the
-        // character: a touch of self-light from the texture keeps the face readable.
+        // character: self-light keeps the face readable. hero-v4.glb ships an emissive map that
+        // is stronger on the face, ears and hands than on the clothes; without one, use a flat
+        // warm share of the albedo.
         o.material.color.setScalar(1.08);
-        o.material.emissive.setRGB(0.2, 0.17, 0.14);
-        o.material.emissiveMap = o.material.map;
+        if (o.material.emissiveMap) o.material.emissive.setScalar(1);
+        else {
+          o.material.emissive.setRGB(0.2, 0.17, 0.14);
+          o.material.emissiveMap = o.material.map;
+        }
       }
       if (hero && o.isSkinnedMesh) o.parent.add(outlineOf(o));
     }
@@ -252,13 +284,17 @@ const heroRamp = (() => {
 // space so it follows the skinning) in a deep teal that matches the painted line work.
 function outlineOf(mesh) {
   const m = new T.MeshBasicMaterial({ color: '#16302f', side: T.BackSide });
+  // `_outline` (glTF `_OUTLINE`) is 0 on hair lying flat on the forehead, so no ink crosses the eyes.
+  const weighted = !!mesh.geometry.attributes._outline;
   m.onBeforeCompile = shader => {
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <begin_vertex>',
-      '#include <begin_vertex>\n  transformed += normalize(normal) * 0.011;',
-    );
+    shader.vertexShader =
+      (weighted ? 'attribute float _outline;\n#define OUTLINE_W _outline\n' : '#define OUTLINE_W 1.0\n') +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\n  transformed += normalize(normal) * 0.011 * OUTLINE_W;',
+      );
   };
-  m.customProgramCacheKey = () => 'hero-outline';
+  m.customProgramCacheKey = () => 'hero-outline' + (weighted ? '-w' : '');
   const o = new T.SkinnedMesh(mesh.geometry, m);
   o.name = mesh.name + 'Outline';
   o.bind(mesh.skeleton, mesh.bindMatrix);
@@ -272,7 +308,7 @@ function outlineOf(mesh) {
 
 // Swap the PBR materials for toon materials with a warm sunset rim on the sun side.
 // Colours, vertex colours and the painted eye texture are kept.
-function paintedMaterial(src, sunView, hero = false) {
+function paintedMaterial(src, sunView, hero = false, eyes = null) {
   const m = new T.MeshToonMaterial({
     name: src.name,
     color: src.color,
@@ -287,6 +323,7 @@ function paintedMaterial(src, sunView, hero = false) {
     alphaTest: src.alphaTest,
   });
   m.onBeforeCompile = shader => {
+    if (eyes) addBlink(shader, eyes);
     shader.uniforms.uSunView = { value: sunView };
     shader.uniforms.uRim = { value: new T.Color('#ffcf8c') };
     shader.fragmentShader = shader.fragmentShader
@@ -303,13 +340,68 @@ function paintedMaterial(src, sunView, hero = false) {
         #include <opaque_fragment>`,
       );
   };
-  m.customProgramCacheKey = () => (hero ? 'painted-toon-rim-hero' : 'painted-toon-rim');
+  m.customProgramCacheKey = () =>
+    hero ? 'painted-toon-rim-hero' + (eyes ? '-blink' : '') : 'painted-toon-rim';
   return m;
+}
+
+// Eyelids for the painted eyes: in bind space (before skinning) each eye is an ellipse; while
+// uBlink rises a skin-coloured lid slides down it and leaves a soft lash curve when closed.
+function addBlink(shader, e) {
+  Object.assign(shader.uniforms, {
+    uBlink: blinkU,
+    uEyeL: { value: new T.Vector2(...e.L) },
+    uEyeR: { value: new T.Vector2(...e.R) },
+    uEyeRad: { value: new T.Vector2(...e.r) },
+    uEyeZ: { value: e.zmin },
+    uSkin: { value: new T.Color(...e.skin) },
+  });
+  shader.vertexShader = shader.vertexShader
+    .replace('void main() {', 'varying vec3 vBind;\nvoid main() {')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vBind = position;');
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      'void main() {',
+      'varying vec3 vBind;\nuniform float uBlink, uEyeZ;\nuniform vec2 uEyeL, uEyeR, uEyeRad;\nuniform vec3 uSkin;\nvoid main() {',
+    )
+    .replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+      float lid = 0.0, lash = 0.0;
+      if (uBlink > 0.001 && vBind.z > uEyeZ) {
+        for (int i = 0; i < 2; i++) {
+          vec2 d = (vBind.xy - (i == 0 ? uEyeL : uEyeR)) / uEyeRad;
+          float inEye = 1.0 - smoothstep(0.7, 1.0, dot(d, d));
+          float edge = mix(1.0, -0.45 + 0.4 * d.x * d.x, uBlink);
+          // Only repaint painted eye pixels (whites, iris, lashes); plain skin inside the ellipse is kept.
+          vec3 c = diffuseColor.rgb;
+          float notSkin = 1.0 - smoothstep(0.36, 0.46, c.r - c.b);
+          lid = max(lid, smoothstep(edge - 0.05, edge + 0.05, d.y) * inEye * notSkin);
+          lash = max(lash, (1.0 - smoothstep(0.05, 0.13, abs(d.y - edge))) * inEye * smoothstep(0.15, 0.4, uBlink));
+        }
+        diffuseColor.rgb = mix(mix(diffuseColor.rgb, uSkin, lid), vec3(0.035, 0.04, 0.05), lash * 0.9);
+      }`,
+    )
+    .replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      totalEmissiveRadiance = mix(totalEmissiveRadiance, uSkin * vec3(0.5, 0.44, 0.38), lid) * (1.0 - lash);`,
+    );
 }
 
 window.GroundedWalker = {
   get ready() {
     return ready;
+  },
+  get blinks() {
+    return !!eyes;
+  },
+  // For screenshots/tests: hold the eyelids at `v` (0 open .. 1 closed; null resumes blinking).
+  holdBlink(v) {
+    blinkHeld = v !== null;
+    blinkStart = 0;
+    blinkU.value = v ?? 0;
+    if (ready && !hidden()) renderer.render(scene, camera);
   },
   activate,
   setPosition(x, y, go) {
@@ -353,4 +445,5 @@ reduceMotion.addEventListener?.('change', () => {
   grass?.setReducedMotion(reduceMotion.matches);
   kick();
 });
+scheduleBlink();
 if (!panel.hidden) activate();

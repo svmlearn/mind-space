@@ -27,6 +27,7 @@
 
 - 主页：`grounded-walker.js` 默认加载 `assets/meadow/hero-v4.glb`（由原画四视图经 TRELLIS 生成并清理、绑定，构建脚本见 `character-proof/hero-v4-build/`），加载失败或带 `?walker=v3` 时用旧的 `assets/meadow/character-v3.glb`；两者都由 `grounded-rig.js` 驱动。`#grounded-stage` 的 `data-walker` 标明当前是 `v4` 还是 `v3`。
 - `grounded-rig.js` 的静止骨架和步态尺寸可由 GLB 自带：骨骼节点 `extras.tail`（骨骼尾端），`GroundedHero` 节点 `extras.gait`（hip、hipX、ankle、seg、side、neck、headLen、headScale、headTilt、shoulder、arm、toe）。没有这些 extras 时使用代码里的默认值，也就是 v3 的原始数值。
+- hero-v4 的材质（`grounded-walker.js`）：GLB 带 `emissiveMap` 时用它（脸更亮），否则沿用旧的整体暖色自发光；描边宽度乘以顶点属性 `_outline`（没有就按 1）。`extras.eyes` 存在时会做眨眼：着色器在绑定空间里把眼睛像素换成肤色并画一条睫毛线，每 2.6–6 秒一次、约 170 ms，只在那一下请求重绘（不常驻动画循环）；减少动态效果、页面隐藏或暂停时不眨。测试/截图可用 `GroundedWalker.holdBlink(v)`（0 睁 … 1 闭，`null` 恢复）。呼吸起伏没有做：渲染循环是按需的，静止时停帧。
 - 新造型对照：`character-proof/meadow-hero.glb` 是独立静态模型，页面位于 `/character-proof/`。右侧包含已经使用过的概念图与四面参考，但实际模型仍是未完成的造型探索。
 - 新静态模型还没有接入走路，也没有替换主页。不要直接改一个 GLB 文件名就宣称完成融合。现有驱动依赖 `body`、`head`、`thighL/R`、`shinL/R`、`footL/R`、`armL/R` 等命名与结构，需要逐项核对兼容性。
 - 先区分概念图、离线渲染图和浏览器实际模型，交付时也清楚标明，不要拿概念图当最终运行效果。

@@ -1,11 +1,13 @@
 import numpy as np, cv2, json
 from heroio import *
-d=np.load('../work/geom2.npz'); P=d['P'].copy(); UV=d['UV']; F=d['F']
+d=np.load('../work/geom3.npz'); P=d['P'].copy(); UV=d['UV']; F=d['F']
 import sys
-HT=float(sys.argv[1]) if len(sys.argv)>1 else 0.3
+HT=float(sys.argv[1]) if len(sys.argv)>1 else 0.12
+HS=float(sys.argv[2]) if len(sys.argv)>2 else 1.08   # head scale (bigger face, closer to the turnaround)
+UP=float(sys.argv[3]) if len(sys.argv)>3 else 1.12   # overall size vs. v3 on screen
 P[:,0]+=0.055; P[:,2]+=0.04              # centre hips/feet on the origin; origin = floor between the feet
 P[:,1]-=P[:,1].min()
-img=cv2.imread('../work/atlas_final2.png')
+img=cv2.imread('../work/atlas_final3.png')
 # sweater: the TRELLIS bake drifted to a darker leaf green; pull it back to the painted teal
 tm=np.load('../work/tmap.npz'); tpos,tv=tm['pos'],tm['fid']>=0
 Hs=cv2.cvtColor(img,cv2.COLOR_BGR2HSV).astype(np.float32)
@@ -55,14 +57,35 @@ idx=np.argsort(-Wd,1)[:,:4]; W=np.take_along_axis(Wd,idx,1); W/=W.sum(1,keepdims
 J4=idx.astype(np.uint8)
 dom=idx[:,0]
 for nm,i in J.items(): print(nm,(dom==i).sum())
-K=2.0/2.3   # same overall height as the v3 walker (~2 units) so screen size and gait speed stay calibrated
+K=2.0/2.3*UP   # v3 is ~2 units tall; v4 reads smaller (big hair, thin body), so it is scaled up a bit
 P=P*K
 rest={k_:([c*K for c in a_],[c*K for c in b_]) for k_,(a_,b_) in rest.items()}
-gait=dict(hip=0.80,hipX=HIPX,ankle=0.14,seg=0.35,side=0.20,neck=0.70,headLen=0.80,headScale=1.0,
+gait=dict(hip=0.80,hipX=HIPX,ankle=0.14,seg=0.35,side=0.20,neck=0.70,headLen=0.80,headScale=HS,
           shoulder=[SH[0],SH[1]-0.80],arm=[HAND[0]-SH[0]-0.03,HAND[1]-SH[1]],toe=0.33,height=2.3,headTilt=HT)
 gait={k_:([round(c*K,4) for c in v_] if isinstance(v_,list) else (v_ if k_ in ('headScale','headTilt') else round(v_*K,4))) for k_,v_ in gait.items()}
+# ---- emissive (self-light) map: albedo x warm tint x strength; face/ears/hands get more
+wf=np.load('../work/facew3.npy').astype(np.float32)
+Hh=cv2.cvtColor(img,cv2.COLOR_BGR2HSV).astype(np.float32)
+skinT=((Hh[:,:,0]<25)&(Hh[:,:,1]>35)&(Hh[:,:,2]>90)&tv).astype(np.float32)
+facem=np.clip(np.maximum(cv2.GaussianBlur(wf,(0,0),6)*1.4,cv2.GaussianBlur(skinT,(0,0),3)*0.7),0,1)
+EB=float(sys.argv[4]) if len(sys.argv)>4 else 0.20; EF=float(sys.argv[5]) if len(sys.argv)>5 else 0.50
+strength=EB+(EF-EB)*facem
+tint=np.array([0.76,0.88,1.0],np.float32)   # BGR: warm
+emis=(img.astype(np.float32)*tint*strength[...,None]).clip(0,255).astype(np.uint8)
+emis=cv2.resize(emis,(1024,1024),interpolation=cv2.INTER_AREA)
+# ---- eyes for the shader blink (painting eye boxes -> model space, incl. the vertical eye stretch)
+def p2m(px_,py_): return (px_-513)/372-0.054, 1.695+((930-py_)/372-1.695)*1.18
+eyes={}
+for nm,(ex,ey) in (('L',(460,293)),('R',(575,293))):
+    mx_,my_=p2m(ex,ey); eyes[nm]=[round((mx_+0.055)*K,4),round((my_-0.028)*K,4)]
+eyes['r']=[round(30/372*1.25*K,4),round(28/372*1.18*1.65*K,4)]
+eyes['zmin']=round((0.17+0.04)*K,4)
+fm=(wf>0.8)&tv&(tpos[:,:,1]>1.55)&(tpos[:,:,1]<1.64)
+sk=np.median(img[fm&(Hh[:,:,0]<22)],0)[::-1]/255.0
+eyes['skin']=[round(0.94*float(((c+0.055)/1.055)**2.4),4) for c in sk]
+print('eyes',eyes)
 N,_=vnormals(P,F)
 np.savez('../work/hero_final.npz',P=P,UV=UV,F=F,J=J4,W=W,dom=dom)
 save('../work/hero-v4.glb',P,UV,F,img,N=N,skin=dict(joints=[(nm,rest[nm][0]) for nm in order],J=J4,W=W,
-     tails={nm:rest[nm][1] for nm in order},gait=gait),jpeg=90)
+     tails={nm:rest[nm][1] for nm in order},gait=gait,eyes=eyes),jpeg=90,emis=emis,extra_attr={'_OUTLINE':d['olw']})
 print(json.dumps(gait))

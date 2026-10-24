@@ -32,6 +32,8 @@ const DEFAULTS = {
   arm: [0.1, -0.45], // relaxed arm vector (outwards, down)
   toe: 0.22, // ankle -> toe
   headTilt: 0, // chin-up pitch (radians) so the face reads from the high camera
+  armSwingGain: 0.55, // arm swing per unit of foot offset (anti-phase with the same-side leg)
+  armSwingMax: 0.17, // clamp of that swing (character units along the facing direction)
 };
 
 /*
@@ -364,7 +366,7 @@ export class GroundedRig {
       // Arms swing opposite to the leg on the same side, scaled by how far that foot is
       // in front of / behind the hip: smooth, zero when standing, no snapping.
       const footFwd = f.p.clone().sub(this.position).dot(fw),
-        armSwing = clamp(-footFwd * 0.55, -0.17, 0.17) * (0.35 + 0.65 * walk),
+        armSwing = clamp(-footFwd * c.armSwingGain, -c.armSwingMax, c.armSwingMax) * (0.35 + 0.65 * walk),
         sh = hip
           .clone()
           .add(this.rot(V(Math.sign(x) * c.shoulder[0], c.shoulder[1], 0)))

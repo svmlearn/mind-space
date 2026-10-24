@@ -1,17 +1,494 @@
 import * as T from 'three';
-const UP=new T.Vector3(0,1,0),V=(x=0,y=0,z=0)=>new T.Vector3(x,y,z),smooth=x=>{x=Math.max(0,Math.min(1,x));return x*x*(3-2*x)},delta=(a,b)=>Math.atan2(Math.sin(b-a),Math.cos(b-a));
-function frame(h,t,yaw){const y=t.clone().sub(h).normalize(),right=V(Math.cos(yaw),0,-Math.sin(yaw)),x=right.addScaledVector(y,-right.dot(y)).normalize(),z=V().crossVectors(x,y).normalize();return new T.Matrix4().makeBasis(x,y,z).setPosition(h)}
-export class GroundedRig{
-constructor(model,position){this.model=model;this.position=position.clone();this.target=position.clone();this.yaw=0;this.targetYaw=0;this.velocity=V();this.feet={};this.swing=null;this.next='L';this.clock=0;this.moving=false;this.bones={};this.correction={};this.length={};const rest={body:[[0,.9,0],[0,1.48,0]],head:[[0,1.47,0],[0,2.02,0]]};for(const [s,x] of [['L',-.185],['R',.185]]){rest['thigh'+s]=[[x,.91,0],[x,.54,.04]];rest['shin'+s]=[[x,.54,.04],[x,.16,0]];rest['foot'+s]=[[x,.16,0],[x,.16,.22]];rest['arm'+s]=[[Math.sign(x)*.34,1.37,0],[Math.sign(x)*.44,.91,0]];this.feet[s]={p:position.clone().add(V(x,.16,0)),yaw:0}}
-model.updateMatrixWorld(true);for(const[n,[a,b]]of Object.entries(rest)){const bone=model.getObjectByName(n);if(!bone)throw Error('Missing bone '+n);this.bones[n]=bone;const h=V(...a),t=V(...b);this.length[n]=h.distanceTo(t);this.correction[n]=frame(h,t,0).setPosition(0,0,0).invert().multiply(bone.matrixWorld.clone().setPosition(0,0,0))}this.pose()}
-setTarget(p,moving){this.target.copy(p);this.moving=moving}
-face(yaw){this.targetYaw=yaw}
-rot(p,yaw=this.yaw){return p.applyAxisAngle(UP,yaw)}
-sideTarget(side,p=this.position,yaw=this.yaw){return p.clone().add(this.rot(V(side==='L'?-.185:.185,.16,0),yaw))}
-setBone(n,h,t,yaw=this.yaw){const b=this.bones[n],m=frame(h,t,yaw).multiply(this.correction[n]).multiply(new T.Matrix4().makeScale(1,h.distanceTo(t)/this.length[n],1));b.parent.updateWorldMatrix(true,false);b.parent.matrixWorld.clone().invert().multiply(m).decompose(b.position,b.quaternion,b.scale);b.updateWorldMatrix(false,false)}
-update(dt){this.clock+=dt;const old=this.position.clone();this.position.copy(this.target);this.velocity.copy(this.position).sub(old).multiplyScalar(dt?1/dt:0);this.yaw+=Math.max(-2.2*dt,Math.min(2.2*dt,delta(this.yaw,this.targetYaw)));const moving=this.moving&&this.velocity.length()>.01;let finished=false;
-if(this.swing){const s=this.swing;s.t+=dt;const u=Math.min(1,s.t/.14),v=smooth(u),f=this.feet[s.side];f.p.copy(s.start).lerp(s.end,v);f.p.y+=.12*Math.sin(Math.PI*u)**2;f.yaw=s.yaw+delta(s.yaw,s.endYaw)*v;if(u===1){f.p.copy(s.end);f.yaw=s.endYaw;this.swing=null;this.next=s.side==='L'?'R':'L';finished=true}}
-if(!this.swing&&!finished){let side=this.next;const desired=s=>this.sideTarget(s);const error=s=>this.feet[s].p.distanceTo(desired(s));if(error(side)<=(moving?.1:.055)&&error(side==='L'?'R':'L')>(moving?.1:.055))side=side==='L'?'R':'L';const turn=Math.abs(delta(this.feet[side].yaw,this.yaw));if(error(side)>(moving?.11:.055)||turn>.15){const end=desired(side);if(moving)end.addScaledVector(this.velocity,.22);end.y=.16;this.swing={side,t:0,start:this.feet[side].p.clone(),end,yaw:this.feet[side].yaw,endYaw:this.yaw};}}
-this.pose();return this.moving||!!this.swing||Math.abs(delta(this.yaw,this.targetYaw))>.002||['L','R'].some(s=>this.feet[s].p.distanceTo(this.sideTarget(s))>.055||Math.abs(delta(this.feet[s].yaw,this.yaw))>.15)}
-pose(){const active=this.swing?Math.sin(Math.PI*Math.min(1,this.swing.t/.14)):0,hip=this.position.clone().add(V(0,.89+.014*active,0));this.setBone('body',hip,hip.clone().add(V(.008*active,.58,0)));this.setBone('head',hip.clone().add(V(0,.58,0)),hip.clone().add(V(0,1.13,0)));for(const[s,x]of[['L',-.185],['R',.185]]){const f=this.feet[s],h=hip.clone().add(this.rot(V(x,.02,0))),d=f.p.clone().sub(h),length=Math.min(.809,d.length()),dir=d.clone().normalize(),fw=this.rot(V(0,0,1)),bend=fw.addScaledVector(dir,-fw.dot(dir)).normalize(),k=h.clone().add(f.p).multiplyScalar(.5).addScaledVector(bend,Math.sqrt(Math.max(.001,.405**2-length**2/4)));this.setBone('thigh'+s,h,k);this.setBone('shin'+s,k,f.p);this.setBone('foot'+s,f.p,f.p.clone().add(this.rot(V(0,0,.22),f.yaw)),f.yaw);const sh=hip.clone().add(this.rot(V(Math.sign(x)*.34,.48,0))),swing=(this.swing?(this.swing.side===s?1:-1)*active*.12:0);this.setBone('arm'+s,sh,sh.clone().add(this.rot(V(Math.sign(x)*.10,-.45,-swing))))}this.model.updateMatrixWorld(true)}
+const UP = new T.Vector3(0, 1, 0),
+  V = (x = 0, y = 0, z = 0) => new T.Vector3(x, y, z),
+  clamp = (x, a, b) => Math.max(a, Math.min(b, x)),
+  smooth = x => {
+    x = clamp(x, 0, 1);
+    return x * x * (3 - 2 * x);
+  },
+  delta = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
+function frame(h, t, yaw) {
+  const y = t.clone().sub(h).normalize(),
+    right = V(Math.cos(yaw), 0, -Math.sin(yaw)),
+    x = right.addScaledVector(y, -right.dot(y)).normalize(),
+    z = V().crossVectors(x, y).normalize();
+  return new T.Matrix4().makeBasis(x, y, z).setPosition(h);
+}
+
+// Gait constants, in character units (the model is ~2 units tall at scale 1).
+// These defaults are the hand-built character-v3.glb. A model can override any of them with
+// glTF extras: `GroundedHero.extras.gait` (numbers below) and `<bone>.extras.tail` (rest tail
+// position, next to the bone's rest head = its translation). Missing values fall back here.
+const DEFAULTS = {
+  hip: 0.89, // resting hip height
+  hipX: 0.185, // half distance between the hip joints
+  ankle: 0.16, // ankle height above ground when planted
+  seg: 0.405, // thigh / shin length
+  side: 0.185, // half stance width (where the feet are planted)
+  headScale: 0.92, // slightly smaller head reads closer to the painted turnaround
+  neck: 0.58, // hip -> neck
+  headLen: 0.55, // neck -> top of head
+  shoulder: [0.34, 0.48], // shoulder joint offset from the hip (x, y)
+  arm: [0.1, -0.45], // relaxed arm vector (outwards, down)
+  toe: 0.22, // ankle -> toe
+  headTilt: 0, // chin-up pitch (radians) so the face reads from the high camera
+  armSwingGain: 0.55, // arm swing per unit of foot offset (anti-phase with the same-side leg)
+  armSwingMax: 0.17, // clamp of that swing (character units along the facing direction)
+  // Two-bone arms (only used when the model has optional `forearmL/R` bones, e.g. hero-v4):
+  upperArm: null, // [out, down] shoulder -> elbow while hanging relaxed
+  foreArm: null, // [out, down] elbow -> hand while hanging relaxed
+  elbowRest: 0.12, // relaxed elbow bend (radians, forearm forwards)
+  elbowSwing: 0.45, // extra bend at the front of the swing (none at the back)
+  // Gait shape (read from the front as much as from the side):
+  narrow: 0.25, // walking steps land closer to the midline: stance half width = side * (1 - narrow)
+  swingIn: 0.015, // the swing foot passes a little inwards, close to the stance ankle
+  kneeOut: 0.2, // knees bend forwards and a little outwards, so the bend also reads from the front
+  toeOut: 0.06, // feet point slightly outwards (radians)
+  flex: 0.035, // hips sink while walking: the stance knee stays softly bent
+  bob: 0.024, // inverted pendulum bob: highest over the stance foot, lowest at heel strike
+  lift: 0.085, // swing foot lift (plus 0.03 * speed)
+  sway: 0.03, // hips shift over the stance foot
+  pelvisTilt: 0.012, // swing-side hip joint drops a little
+  pelvisYaw: 0.1, // pelvis turns with the leading leg (radians at a full stride)
+  twist: 0.06, // chest counter-turns against the pelvis (radians)
+  heelOff: 0.3, // the trailing stance foot peels off its heel before lift-off (radians)
+  heelStrike: 0.18, // toe up at landing, then the foot rolls flat
+  jitter: 0.06, // per-step variation of width, lift and swing time (seeded, so recordings repeat)
+};
+
+/*
+ * Grounded rig.
+ *
+ * The rig works in "character space" (`position`, `feet`). The holder group that owns the
+ * model is then scaled for depth (`setScale`) around the on-screen position (`world`).
+ * Character-space motion is world motion divided by the scale, so a planted foot stays
+ * exactly where it touched the lawn at any depth (no foot sliding when small/far away).
+ *
+ * Walking is phase driven: while moving, steps alternate on a cadence that depends on speed,
+ * each foot is placed predictively so it lands ahead of the hip and stays put through stance.
+ * When not moving (start, stop, turning on the spot) the feet catch up with short settle steps.
+ */
+export class GroundedRig {
+  constructor(model, position, holder = null) {
+    this.model = model;
+    let gait = {};
+    model.traverse(o => {
+      if (o.userData?.gait) gait = o.userData.gait;
+    });
+    const c = (this.cfg = { ...DEFAULTS, ...gait });
+    c.reach = 2 * c.seg - 0.012; // keep a hint of knee bend: never fully straight, never stretched
+    this.holder = holder;
+    this.scale = 1;
+    this.world = position.clone(); // last on-screen position (world units)
+    this.position = position.clone(); // character-space hip position
+    this.target = position.clone();
+    this.yaw = 0;
+    this.yawVel = 0;
+    this.targetYaw = 0;
+    this.velocity = V();
+    this.feet = {};
+    this.swing = null;
+    this.next = 'L';
+    this.clock = 0;
+    this.sinceLand = 1;
+    this.moving = false;
+    this.walk = 0; // 0..1 blend between standing and walking posture
+    this.sway = 0; // lateral hip shift (character units, + = towards the right foot)
+    this.lastLand = null;
+    this.seed = 0x2f6b1d; // deterministic per-step variation
+    this.bones = {};
+    this.correction = {};
+    this.length = {};
+    const rest = {
+      body: [
+        [0, 0.9, 0],
+        [0, 1.48, 0],
+      ],
+      head: [
+        [0, 1.47, 0],
+        [0, 2.02, 0],
+      ],
+    };
+    for (const [s, x] of [
+      ['L', -DEFAULTS.side],
+      ['R', DEFAULTS.side],
+    ]) {
+      rest['thigh' + s] = [
+        [x, 0.91, 0],
+        [x, 0.54, 0.04],
+      ];
+      rest['shin' + s] = [
+        [x, 0.54, 0.04],
+        [x, 0.16, 0],
+      ];
+      rest['foot' + s] = [
+        [x, 0.16, 0],
+        [x, 0.16, 0.22],
+      ];
+      rest['arm' + s] = [
+        [Math.sign(x) * 0.34, 1.37, 0],
+        [Math.sign(x) * 0.44, 0.91, 0],
+      ];
+      this.feet[s] = { p: position.clone().add(V(s === 'L' ? -c.side : c.side, c.ankle, 0)), yaw: 0 };
+    }
+    this.resetHolder();
+    model.updateMatrixWorld(true);
+    for (const [n, [a, b]] of Object.entries(rest)) {
+      const bone = model.getObjectByName(n);
+      if (!bone) throw Error('Missing bone ' + n);
+      this.bones[n] = bone;
+      // Rest pose from the model when it carries one (head = bone translation, tail = extras).
+      const own = Array.isArray(bone.userData?.tail),
+        h = own ? bone.position.clone().applyMatrix4(bone.parent.matrixWorld) : V(...a),
+        t = own ? V(...bone.userData.tail).applyMatrix4(bone.parent.matrixWorld) : V(...b);
+      this.length[n] = h.distanceTo(t);
+      this.correction[n] = frame(h, t, 0)
+        .setPosition(0, 0, 0)
+        .invert()
+        .multiply(bone.matrixWorld.clone().setPosition(0, 0, 0));
+    }
+    // Optional forearm bones (elbows). Without them (character-v3) `arm` spans shoulder -> hand.
+    this.elbows = ['L', 'R'].every(s => Array.isArray(model.getObjectByName('forearm' + s)?.userData?.tail)) && !!c.upperArm && !!c.foreArm;
+    if (this.elbows)
+      for (const s of ['L', 'R']) {
+        const n = 'forearm' + s,
+          bone = model.getObjectByName(n),
+          h = bone.position.clone().applyMatrix4(bone.parent.matrixWorld),
+          t = V(...bone.userData.tail).applyMatrix4(bone.parent.matrixWorld);
+        this.bones[n] = bone;
+        this.length[n] = h.distanceTo(t);
+        this.correction[n] = frame(h, t, 0)
+          .setPosition(0, 0, 0)
+          .invert()
+          .multiply(bone.matrixWorld.clone().setPosition(0, 0, 0));
+      }
+    this.pose();
+  }
+  setTarget(p, moving) {
+    this.target.copy(p);
+    this.moving = moving;
+  }
+  setScale(s) {
+    this.scale = clamp(s, 0.3, 2);
+  }
+  face(yaw) {
+    this.targetYaw = yaw;
+  }
+  /** Jump straight to a spot (reduced motion): no steps, feet placed under the hips. */
+  snap(p) {
+    this.target.copy(p);
+    this.world.copy(p);
+    this.position.copy(p);
+    this.velocity.set(0, 0, 0);
+    this.swing = null;
+    this.moving = false;
+    this.walk = 0;
+    this.yaw = this.targetYaw;
+    this.yawVel = 0;
+    for (const side of ['L', 'R']) {
+      this.feet[side].p.copy(this.sideTarget(side));
+      this.feet[side].yaw = this.yaw;
+    }
+    this.pose();
+  }
+  rot(p, yaw = this.yaw) {
+    return p.applyAxisAngle(UP, yaw);
+  }
+  /** Half stance width: narrower while walking (steps fall closer to the midline). */
+  width() {
+    return this.cfg.side * (1 - this.cfg.narrow * this.walk);
+  }
+  rand() {
+    this.seed = (Math.imul(this.seed, 1664525) + 1013904223) >>> 0;
+    return this.seed / 4294967296;
+  }
+  sideTarget(side, p = this.position, yaw = this.yaw, w = this.width()) {
+    const c = this.cfg;
+    return p.clone().add(this.rot(V(side === 'L' ? -w : w, c.ankle, 0), yaw));
+  }
+  /** Heel-off of a planted foot that trails behind the hip (toe-down pitch, pivoting on the ball). */
+  heelOffPitch(side) {
+    const c = this.cfg,
+      back = -this.feet[side].p.clone().sub(this.position).dot(this.rot(V(0, 0, 1)));
+    return -c.heelOff * smooth((back - 0.04) / 0.14) * this.walk;
+  }
+  setBone(n, h, t, yaw = this.yaw, s = 1) {
+    const b = this.bones[n],
+      m = frame(h, t, yaw)
+        .multiply(this.correction[n])
+        .multiply(new T.Matrix4().makeScale(s, h.distanceTo(t) / this.length[n], s));
+    b.parent.updateWorldMatrix(true, false);
+    b.parent.matrixWorld.clone().invert().multiply(m).decompose(b.position, b.quaternion, b.scale);
+    b.updateWorldMatrix(false, false);
+  }
+  resetHolder() {
+    if (!this.holder) return;
+    this.holder.position.set(0, 0, 0);
+    this.holder.scale.set(1, 1, 1);
+    this.holder.updateMatrixWorld(true);
+  }
+  placeHolder() {
+    if (!this.holder) return;
+    const s = this.scale;
+    this.holder.scale.setScalar(s);
+    this.holder.position.set(this.world.x - s * this.position.x, 0, this.world.z - s * this.position.z);
+    this.holder.updateMatrixWorld(true);
+  }
+  /** Cadence and swing time for a character-space speed. */
+  timing(speed) {
+    const period = clamp(0.4 - 0.09 * speed, 0.27, 0.4); // time per step
+    return { period, swing: period * 0.8 };
+  }
+  startSwing(side, duration, end, lift, width = this.width()) {
+    end.y = this.cfg.ankle;
+    this.swing = {
+      side,
+      t: 0,
+      duration,
+      lift,
+      width,
+      pitch0: this.heelOffPitch(side),
+      start: this.feet[side].p.clone(),
+      end,
+      yaw: this.feet[side].yaw,
+      endYaw: this.yaw,
+    };
+  }
+  update(dt) {
+    this.clock += dt;
+    // World motion -> character-space motion (divide by depth scale).
+    const step = this.target.clone().sub(this.world);
+    step.y = 0;
+    this.world.copy(this.target);
+    this.position.addScaledVector(step, 1 / this.scale);
+    const raw = step.multiplyScalar(dt ? 1 / (dt * this.scale) : 0);
+    this.velocity.lerp(raw, 1 - Math.exp(-dt * 14));
+    if (raw.lengthSq() < 1e-8 && this.velocity.lengthSq() < 1e-4) this.velocity.set(0, 0, 0);
+    const speed = this.velocity.length();
+
+    // Turn with a critically damped spring instead of a constant rate: eases in and out.
+    const err = delta(this.yaw, this.targetYaw),
+      k = 70;
+    this.yawVel += (k * err - 2 * Math.sqrt(k) * this.yawVel) * dt;
+    this.yawVel = clamp(this.yawVel, -7, 7);
+    this.yaw += this.yawVel * dt;
+    if (Math.abs(err) < 0.002 && Math.abs(this.yawVel) < 0.01) {
+      this.yaw = this.targetYaw;
+      this.yawVel = 0;
+    }
+
+    const moving = this.moving && speed > 0.12;
+    this.walk += ((moving ? 1 : 0) - this.walk) * (1 - Math.exp(-dt * (moving ? 6 : 4)));
+    const { period, swing } = this.timing(speed);
+    this.sinceLand += dt;
+
+    let landed = false;
+    if (this.swing) {
+      const s = this.swing,
+        f = this.feet[s.side];
+      s.t += dt;
+      // Keep steering the airborne foot towards where the hip will be when it lands.
+      if (moving && s.t < s.duration * 0.75) {
+        const remaining = s.duration - s.t;
+        s.end = this.sideTarget(s.side, this.position.clone().addScaledVector(this.velocity, remaining + period - s.duration / 2), this.yaw, s.width);
+        s.end.y = this.cfg.ankle;
+        s.endYaw = this.yaw;
+      }
+      const u = Math.min(1, s.t / s.duration),
+        v = smooth(u);
+      f.p.copy(s.start).lerp(s.end, v);
+      f.p.y += s.lift * Math.sin(Math.PI * u) ** 1.5;
+      // pass close to the stance ankle mid-swing
+      f.p.addScaledVector(this.rot(V(1, 0, 0)), (s.side === 'L' ? 1 : -1) * this.cfg.swingIn * this.walk * Math.sin(Math.PI * u));
+      f.yaw = s.yaw + delta(s.yaw, s.endYaw) * v;
+      if (u === 1) {
+        f.p.copy(s.end);
+        f.yaw = s.endYaw;
+        this.swing = null;
+        this.next = s.side === 'L' ? 'R' : 'L';
+        this.sinceLand = 0;
+        this.lastLand = s.side;
+        landed = true;
+      }
+    }
+
+    if (!this.swing && !landed) {
+      const other = s => (s === 'L' ? 'R' : 'L'),
+        error = s => {
+          const d = this.feet[s].p.clone().sub(this.sideTarget(s));
+          d.y = 0;
+          return d.length();
+        };
+      if (moving) {
+        // Phase driven: next foot lifts after a short double-support pause.
+        const side = this.next;
+        if (this.sinceLand >= period - swing) {
+          const j = this.cfg.jitter,
+            r = () => 1 + j * (2 * this.rand() - 1),
+            dur = swing * (1 + 0.5 * j * (2 * this.rand() - 1)),
+            w = this.width() * r(),
+            end = this.sideTarget(side, this.position.clone().addScaledVector(this.velocity, dur + period - dur / 2), this.yaw, w);
+          this.startSwing(side, dur, end, (this.cfg.lift + 0.03 * Math.min(1, speed)) * r(), w);
+        }
+      } else {
+        // Settle: move whichever foot is furthest from its rest spot, one at a time.
+        let side = this.next;
+        if (error(side) < error(other(side)) - 0.02) side = other(side);
+        const turn = Math.abs(delta(this.feet[side].yaw, this.yaw));
+        if ((error(side) > 0.05 || turn > 0.22) && this.sinceLand > 0.04) {
+          this.startSwing(side, 0.2, this.sideTarget(side), 0.05);
+          this.swing.pitch0 = 0;
+        }
+      }
+    }
+    // Hips drift over the stance foot during each swing and back through double support.
+    const sw = this.swing,
+      su = sw ? Math.min(1, sw.t / sw.duration) : 0,
+      swayTo = sw && sw.duration > 0.2 ? (sw.side === 'L' ? 1 : -1) * this.cfg.sway * Math.sin(Math.PI * su) ** 0.6 * (0.4 + 0.6 * this.walk) : 0;
+    this.sway += (swayTo - this.sway) * (1 - Math.exp(-dt * 14));
+    this.pose();
+    return (
+      this.moving ||
+      Math.abs(this.sway) > 0.002 ||
+      !!this.swing ||
+      speed > 0.001 ||
+      this.walk > 0.01 ||
+      Math.abs(delta(this.yaw, this.targetYaw)) > 0.002 ||
+      Math.abs(this.yawVel) > 0.01 ||
+      ['L', 'R'].some(s => {
+        const d = this.feet[s].p.clone().sub(this.sideTarget(s));
+        d.y = 0;
+        return d.length() > 0.05 || Math.abs(delta(this.feet[s].yaw, this.yaw)) > 0.22;
+      })
+    );
+  }
+  pose() {
+    this.resetHolder();
+    const c = this.cfg,
+      REACH = c.reach;
+    const s = this.swing,
+      u = s ? Math.min(1, s.t / s.duration) : 0,
+      active = s ? Math.sin(Math.PI * u) : 0,
+      walk = this.walk,
+      fw = this.rot(V(0, 0, 1)),
+      right = this.rot(V(1, 0, 0));
+
+    // Weight shift: hips drift over the stance foot while the other foot is in the air.
+    const stanceSign = s ? (s.side === 'L' ? 1 : -1) : 0; // +x is the right foot
+    const hip = this.position.clone();
+    hip.addScaledVector(right, this.sway);
+    // Inverted pendulum bob: highest mid-swing, lowest at heel strike; sunk a little while walking.
+    hip.y = c.hip - c.flex * walk + c.bob * active * walk;
+    // Pelvis: turns with the leading leg (chest counter-turns), the swing-side hip drops a little.
+    const fwdOf = sd => this.feet[sd].p.clone().sub(this.position).dot(fw),
+      stride = clamp((fwdOf('R') - fwdOf('L')) / 0.3, -1, 1) * walk,
+      pelvisYaw = this.yaw - c.pelvisYaw * stride,
+      joint = (sd, x) =>
+        hip.clone().add(this.rot(V(x, 0.02 + (s && s.duration > 0.2 ? (s.side === sd ? -1 : 1) : 0) * c.pelvisTilt * active * walk, 0), pelvisYaw)),
+      ankleAt = (sd, f, footYaw, pitch) => {
+        // planted heel-off pivots on the ball of the foot: raise the ankle, keep the toe down
+        const t0 = this.rot(V(0, 0, c.toe), footYaw),
+          t1 = this.rot(V(0, 0, c.toe * Math.cos(pitch)), footYaw);
+        t1.y = c.toe * Math.sin(pitch);
+        return f.p.clone().add(t0.sub(t1));
+      },
+      heel = {};
+    for (const sd of ['L', 'R']) {
+      const f = this.feet[sd],
+        footYaw = f.yaw + (sd === 'R' ? 1 : -1) * c.toeOut;
+      let pivot = 0,
+        pitch = 0;
+      if (s && s.side === sd) {
+        pivot = (s.pitch0 || 0) * (1 - smooth(u / 0.35));
+        // toe points down after push-off, comes up before heel strike
+        pitch = u < 0.5 ? -0.32 * Math.sin(2 * Math.PI * u) : (s.duration > 0.2 ? c.heelStrike * walk : 0.1) * smooth((u - 0.5) / 0.45);
+      } else {
+        pivot = this.heelOffPitch(sd);
+        if (this.lastLand === sd) pitch = c.heelStrike * walk * (1 - smooth(this.sinceLand / 0.13));
+      }
+      heel[sd] = { footYaw, pitch: pitch + pivot, ankle: ankleAt(sd, f, footYaw, pivot) };
+    }
+    // Never let the legs over-stretch: drop the hips instead (no rubbery shins).
+    for (const [side, x] of [
+      ['L', -c.hipX],
+      ['R', c.hipX],
+    ]) {
+      const f = heel[side].ankle,
+        j = joint(side, x),
+        horiz = Math.hypot(f.x - j.x, f.z - j.z),
+        maxY = f.y + Math.sqrt(Math.max(0, REACH * REACH - horiz * horiz)) - 0.02;
+      if (maxY < hip.y) hip.y = Math.max(c.hip - 0.12, maxY);
+    }
+
+    // Torso: lean into the walk, slight roll towards the stance side.
+    const lean = 0.05 * walk + 0.012 * active,
+      top = hip
+        .clone()
+        .add(V(0, c.neck, 0))
+        .addScaledVector(fw, lean)
+        .addScaledVector(right, stanceSign * 0.01 * active);
+    this.setBone('body', hip, top, this.yaw + c.twist * stride);
+    // Head leads turns a little and stays steadier than the torso.
+    const look = this.yaw + clamp(delta(this.yaw, this.targetYaw) * 0.45, -0.45, 0.45);
+    const headBase = top.clone();
+    const headTop = headBase
+      .clone()
+      .add(V(0, c.headLen * c.headScale * Math.cos(c.headTilt), 0))
+      .addScaledVector(fw, -lean * 0.4 - c.headLen * c.headScale * Math.sin(c.headTilt));
+    this.setBone('head', headBase, headTop, look, c.headScale);
+
+    for (const [side, x] of [
+      ['L', -c.hipX],
+      ['R', c.hipX],
+    ]) {
+      const f = this.feet[side],
+        hf = heel[side],
+        h = joint(side, x),
+        d = hf.ankle.clone().sub(h),
+        length = Math.min(REACH, d.length()),
+        dir = d.clone().normalize(),
+        bendTo = fw.clone().addScaledVector(right, Math.sign(x) * c.kneeOut),
+        bend = bendTo.addScaledVector(dir, -bendTo.dot(dir)).normalize(),
+        knee = h
+          .clone()
+          .addScaledVector(dir, length / 2)
+          .addScaledVector(bend, Math.sqrt(Math.max(0.0004, c.seg ** 2 - length ** 2 / 4)));
+      const ankle = h.clone().addScaledVector(dir, length);
+      this.setBone('thigh' + side, h, knee);
+      this.setBone('shin' + side, knee, ankle);
+      const pitch = hf.pitch,
+        toe = this.rot(V(0, 0, c.toe * Math.cos(pitch)), hf.footYaw);
+      toe.y = c.toe * Math.sin(pitch);
+      this.setBone('foot' + side, ankle, ankle.clone().add(toe), hf.footYaw);
+
+      // Arms swing opposite to the leg on the same side, scaled by how far that foot is
+      // in front of / behind the hip: smooth, zero when standing, no snapping.
+      const footFwd = f.p.clone().sub(this.position).dot(fw),
+        armSwing = clamp(-footFwd * c.armSwingGain, -c.armSwingMax, c.armSwingMax) * (0.35 + 0.65 * walk),
+        sh = hip
+          .clone()
+          .add(this.rot(V(Math.sign(x) * c.shoulder[0], c.shoulder[1], 0), this.yaw + c.twist * stride))
+          .addScaledVector(fw, lean * 0.8);
+      if (this.elbows) {
+        // Hanging arm, swinging fore/aft about the shoulder's side axis (sagittal plane only);
+        // the elbow bends more at the front of the swing and almost straightens at the back.
+        const len = Math.hypot(...c.upperArm) + Math.hypot(...c.foreArm),
+          a = Math.asin(clamp(armSwing / len, -0.9, 0.9)),
+          front = Math.max(0, a) / Math.asin(Math.min(0.9, c.armSwingMax / len)),
+          bend = c.elbowRest * (1 - 0.4 * walk * Math.max(0, -a / 0.3)) + c.elbowSwing * walk * front,
+          dir = ([ox, oy], ang) => V(Math.sign(x) * ox, oy * Math.cos(ang), -oy * Math.sin(ang)),
+          elbow = sh.clone().add(this.rot(dir(c.upperArm, a))),
+          hand = elbow.clone().add(this.rot(dir(c.foreArm, a + bend)));
+        this.setBone('arm' + side, sh, elbow);
+        this.setBone('forearm' + side, elbow, hand);
+      } else
+        this.setBone(
+          'arm' + side,
+          sh,
+          sh.clone().add(this.rot(V(Math.sign(x) * (c.arm[0] - 0.02 * walk), c.arm[1] + Math.abs(armSwing) * 0.15, armSwing))),
+        );
+    }
+    this.model.updateMatrixWorld(true);
+    this.placeHolder();
+  }
 }

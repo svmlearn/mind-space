@@ -39,6 +39,21 @@ const DEFAULTS = {
   foreArm: null, // [out, down] elbow -> hand while hanging relaxed
   elbowRest: 0.12, // relaxed elbow bend (radians, forearm forwards)
   elbowSwing: 0.45, // extra bend at the front of the swing (none at the back)
+  // Gait shape (read from the front as much as from the side):
+  narrow: 0.25, // walking steps land closer to the midline: stance half width = side * (1 - narrow)
+  swingIn: 0.015, // the swing foot passes a little inwards, close to the stance ankle
+  kneeOut: 0.2, // knees bend forwards and a little outwards, so the bend also reads from the front
+  toeOut: 0.06, // feet point slightly outwards (radians)
+  flex: 0.035, // hips sink while walking: the stance knee stays softly bent
+  bob: 0.024, // inverted pendulum bob: highest over the stance foot, lowest at heel strike
+  lift: 0.085, // swing foot lift (plus 0.03 * speed)
+  sway: 0.03, // hips shift over the stance foot
+  pelvisTilt: 0.012, // swing-side hip joint drops a little
+  pelvisYaw: 0.1, // pelvis turns with the leading leg (radians at a full stride)
+  twist: 0.06, // chest counter-turns against the pelvis (radians)
+  heelOff: 0.3, // the trailing stance foot peels off its heel before lift-off (radians)
+  heelStrike: 0.18, // toe up at landing, then the foot rolls flat
+  jitter: 0.06, // per-step variation of width, lift and swing time (seeded, so recordings repeat)
 };
 
 /*
@@ -78,6 +93,9 @@ export class GroundedRig {
     this.sinceLand = 1;
     this.moving = false;
     this.walk = 0; // 0..1 blend between standing and walking posture
+    this.sway = 0; // lateral hip shift (character units, + = towards the right foot)
+    this.lastLand = null;
+    this.seed = 0x2f6b1d; // deterministic per-step variation
     this.bones = {};
     this.correction = {};
     this.length = {};
@@ -176,9 +194,23 @@ export class GroundedRig {
   rot(p, yaw = this.yaw) {
     return p.applyAxisAngle(UP, yaw);
   }
-  sideTarget(side, p = this.position, yaw = this.yaw) {
+  /** Half stance width: narrower while walking (steps fall closer to the midline). */
+  width() {
+    return this.cfg.side * (1 - this.cfg.narrow * this.walk);
+  }
+  rand() {
+    this.seed = (Math.imul(this.seed, 1664525) + 1013904223) >>> 0;
+    return this.seed / 4294967296;
+  }
+  sideTarget(side, p = this.position, yaw = this.yaw, w = this.width()) {
     const c = this.cfg;
-    return p.clone().add(this.rot(V(side === 'L' ? -c.side : c.side, c.ankle, 0), yaw));
+    return p.clone().add(this.rot(V(side === 'L' ? -w : w, c.ankle, 0), yaw));
+  }
+  /** Heel-off of a planted foot that trails behind the hip (toe-down pitch, pivoting on the ball). */
+  heelOffPitch(side) {
+    const c = this.cfg,
+      back = -this.feet[side].p.clone().sub(this.position).dot(this.rot(V(0, 0, 1)));
+    return -c.heelOff * smooth((back - 0.04) / 0.14) * this.walk;
   }
   setBone(n, h, t, yaw = this.yaw, s = 1) {
     const b = this.bones[n],
@@ -207,13 +239,15 @@ export class GroundedRig {
     const period = clamp(0.4 - 0.09 * speed, 0.27, 0.4); // time per step
     return { period, swing: period * 0.8 };
   }
-  startSwing(side, duration, end, lift) {
+  startSwing(side, duration, end, lift, width = this.width()) {
     end.y = this.cfg.ankle;
     this.swing = {
       side,
       t: 0,
       duration,
       lift,
+      width,
+      pitch0: this.heelOffPitch(side),
       start: this.feet[side].p.clone(),
       end,
       yaw: this.feet[side].yaw,
@@ -256,7 +290,7 @@ export class GroundedRig {
       // Keep steering the airborne foot towards where the hip will be when it lands.
       if (moving && s.t < s.duration * 0.75) {
         const remaining = s.duration - s.t;
-        s.end = this.sideTarget(s.side, this.position.clone().addScaledVector(this.velocity, remaining + period - s.duration / 2));
+        s.end = this.sideTarget(s.side, this.position.clone().addScaledVector(this.velocity, remaining + period - s.duration / 2), this.yaw, s.width);
         s.end.y = this.cfg.ankle;
         s.endYaw = this.yaw;
       }
@@ -264,6 +298,8 @@ export class GroundedRig {
         v = smooth(u);
       f.p.copy(s.start).lerp(s.end, v);
       f.p.y += s.lift * Math.sin(Math.PI * u) ** 1.5;
+      // pass close to the stance ankle mid-swing
+      f.p.addScaledVector(this.rot(V(1, 0, 0)), (s.side === 'L' ? 1 : -1) * this.cfg.swingIn * this.walk * Math.sin(Math.PI * u));
       f.yaw = s.yaw + delta(s.yaw, s.endYaw) * v;
       if (u === 1) {
         f.p.copy(s.end);
@@ -271,6 +307,7 @@ export class GroundedRig {
         this.swing = null;
         this.next = s.side === 'L' ? 'R' : 'L';
         this.sinceLand = 0;
+        this.lastLand = s.side;
         landed = true;
       }
     }
@@ -286,8 +323,12 @@ export class GroundedRig {
         // Phase driven: next foot lifts after a short double-support pause.
         const side = this.next;
         if (this.sinceLand >= period - swing) {
-          const end = this.sideTarget(side, this.position.clone().addScaledVector(this.velocity, swing + period - swing / 2));
-          this.startSwing(side, swing, end, 0.07 + 0.03 * Math.min(1, speed));
+          const j = this.cfg.jitter,
+            r = () => 1 + j * (2 * this.rand() - 1),
+            dur = swing * (1 + 0.5 * j * (2 * this.rand() - 1)),
+            w = this.width() * r(),
+            end = this.sideTarget(side, this.position.clone().addScaledVector(this.velocity, dur + period - dur / 2), this.yaw, w);
+          this.startSwing(side, dur, end, (this.cfg.lift + 0.03 * Math.min(1, speed)) * r(), w);
         }
       } else {
         // Settle: move whichever foot is furthest from its rest spot, one at a time.
@@ -296,12 +337,19 @@ export class GroundedRig {
         const turn = Math.abs(delta(this.feet[side].yaw, this.yaw));
         if ((error(side) > 0.05 || turn > 0.22) && this.sinceLand > 0.04) {
           this.startSwing(side, 0.2, this.sideTarget(side), 0.05);
+          this.swing.pitch0 = 0;
         }
       }
     }
+    // Hips drift over the stance foot during each swing and back through double support.
+    const sw = this.swing,
+      su = sw ? Math.min(1, sw.t / sw.duration) : 0,
+      swayTo = sw && sw.duration > 0.2 ? (sw.side === 'L' ? 1 : -1) * this.cfg.sway * Math.sin(Math.PI * su) ** 0.6 * (0.4 + 0.6 * this.walk) : 0;
+    this.sway += (swayTo - this.sway) * (1 - Math.exp(-dt * 14));
     this.pose();
     return (
       this.moving ||
+      Math.abs(this.sway) > 0.002 ||
       !!this.swing ||
       speed > 0.001 ||
       this.walk > 0.01 ||
@@ -328,17 +376,46 @@ export class GroundedRig {
     // Weight shift: hips drift over the stance foot while the other foot is in the air.
     const stanceSign = s ? (s.side === 'L' ? 1 : -1) : 0; // +x is the right foot
     const hip = this.position.clone();
-    hip.addScaledVector(right, stanceSign * 0.028 * active * (0.5 + 0.5 * walk));
-    // Inverted pendulum bob: highest mid-swing, lowest at heel strike.
-    hip.y = c.hip - 0.02 * walk + 0.022 * active * walk;
+    hip.addScaledVector(right, this.sway);
+    // Inverted pendulum bob: highest mid-swing, lowest at heel strike; sunk a little while walking.
+    hip.y = c.hip - c.flex * walk + c.bob * active * walk;
+    // Pelvis: turns with the leading leg (chest counter-turns), the swing-side hip drops a little.
+    const fwdOf = sd => this.feet[sd].p.clone().sub(this.position).dot(fw),
+      stride = clamp((fwdOf('R') - fwdOf('L')) / 0.3, -1, 1) * walk,
+      pelvisYaw = this.yaw - c.pelvisYaw * stride,
+      joint = (sd, x) =>
+        hip.clone().add(this.rot(V(x, 0.02 + (s && s.duration > 0.2 ? (s.side === sd ? -1 : 1) : 0) * c.pelvisTilt * active * walk, 0), pelvisYaw)),
+      ankleAt = (sd, f, footYaw, pitch) => {
+        // planted heel-off pivots on the ball of the foot: raise the ankle, keep the toe down
+        const t0 = this.rot(V(0, 0, c.toe), footYaw),
+          t1 = this.rot(V(0, 0, c.toe * Math.cos(pitch)), footYaw);
+        t1.y = c.toe * Math.sin(pitch);
+        return f.p.clone().add(t0.sub(t1));
+      },
+      heel = {};
+    for (const sd of ['L', 'R']) {
+      const f = this.feet[sd],
+        footYaw = f.yaw + (sd === 'R' ? 1 : -1) * c.toeOut;
+      let pivot = 0,
+        pitch = 0;
+      if (s && s.side === sd) {
+        pivot = (s.pitch0 || 0) * (1 - smooth(u / 0.35));
+        // toe points down after push-off, comes up before heel strike
+        pitch = u < 0.5 ? -0.32 * Math.sin(2 * Math.PI * u) : (s.duration > 0.2 ? c.heelStrike * walk : 0.1) * smooth((u - 0.5) / 0.45);
+      } else {
+        pivot = this.heelOffPitch(sd);
+        if (this.lastLand === sd) pitch = c.heelStrike * walk * (1 - smooth(this.sinceLand / 0.13));
+      }
+      heel[sd] = { footYaw, pitch: pitch + pivot, ankle: ankleAt(sd, f, footYaw, pivot) };
+    }
     // Never let the legs over-stretch: drop the hips instead (no rubbery shins).
     for (const [side, x] of [
       ['L', -c.hipX],
       ['R', c.hipX],
     ]) {
-      const f = this.feet[side].p,
-        joint = hip.clone().add(this.rot(V(x, 0.02, 0))),
-        horiz = Math.hypot(f.x - joint.x, f.z - joint.z),
+      const f = heel[side].ankle,
+        j = joint(side, x),
+        horiz = Math.hypot(f.x - j.x, f.z - j.z),
         maxY = f.y + Math.sqrt(Math.max(0, REACH * REACH - horiz * horiz)) - 0.02;
       if (maxY < hip.y) hip.y = Math.max(c.hip - 0.12, maxY);
     }
@@ -350,7 +427,7 @@ export class GroundedRig {
         .add(V(0, c.neck, 0))
         .addScaledVector(fw, lean)
         .addScaledVector(right, stanceSign * 0.01 * active);
-    this.setBone('body', hip, top);
+    this.setBone('body', hip, top, this.yaw + c.twist * stride);
     // Head leads turns a little and stays steadier than the torso.
     const look = this.yaw + clamp(delta(this.yaw, this.targetYaw) * 0.45, -0.45, 0.45);
     const headBase = top.clone();
@@ -365,11 +442,13 @@ export class GroundedRig {
       ['R', c.hipX],
     ]) {
       const f = this.feet[side],
-        h = hip.clone().add(this.rot(V(x, 0.02, 0))),
-        d = f.p.clone().sub(h),
+        hf = heel[side],
+        h = joint(side, x),
+        d = hf.ankle.clone().sub(h),
         length = Math.min(REACH, d.length()),
         dir = d.clone().normalize(),
-        bend = fw.clone().addScaledVector(dir, -fw.dot(dir)).normalize(),
+        bendTo = fw.clone().addScaledVector(right, Math.sign(x) * c.kneeOut),
+        bend = bendTo.addScaledVector(dir, -bendTo.dot(dir)).normalize(),
         knee = h
           .clone()
           .addScaledVector(dir, length / 2)
@@ -377,11 +456,10 @@ export class GroundedRig {
       const ankle = h.clone().addScaledVector(dir, length);
       this.setBone('thigh' + side, h, knee);
       this.setBone('shin' + side, knee, ankle);
-      // Swing foot: toe points down after push-off, then lifts slightly before heel strike.
-      const pitch = s && s.side === side ? (u < 0.5 ? -0.32 : -0.18) * Math.sin(2 * Math.PI * u) : 0,
-        toe = this.rot(V(0, 0, c.toe * Math.cos(pitch)), f.yaw);
+      const pitch = hf.pitch,
+        toe = this.rot(V(0, 0, c.toe * Math.cos(pitch)), hf.footYaw);
       toe.y = c.toe * Math.sin(pitch);
-      this.setBone('foot' + side, ankle, ankle.clone().add(toe), f.yaw);
+      this.setBone('foot' + side, ankle, ankle.clone().add(toe), hf.footYaw);
 
       // Arms swing opposite to the leg on the same side, scaled by how far that foot is
       // in front of / behind the hip: smooth, zero when standing, no snapping.
@@ -389,7 +467,7 @@ export class GroundedRig {
         armSwing = clamp(-footFwd * c.armSwingGain, -c.armSwingMax, c.armSwingMax) * (0.35 + 0.65 * walk),
         sh = hip
           .clone()
-          .add(this.rot(V(Math.sign(x) * c.shoulder[0], c.shoulder[1], 0)))
+          .add(this.rot(V(Math.sign(x) * c.shoulder[0], c.shoulder[1], 0), this.yaw + c.twist * stride))
           .addScaledVector(fw, lean * 0.8);
       if (this.elbows) {
         // Hanging arm, swinging fore/aft about the shoulder's side axis (sagittal plane only);

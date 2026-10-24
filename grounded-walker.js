@@ -10,8 +10,16 @@ const world = document.querySelector('#walk-world'),
 // Same depth cue the original 2D walker used (`.5 + (y - 12) / 140`), normalised so the
 // character keeps its current size at the starting spot (y = 77) and shrinks towards the tree.
 const depthScale = y => (0.5 + (y - 12) / 140) / (0.5 + 65 / 140);
-const HERO_URL = 'assets/meadow/hero-v4.glb',
-  FALLBACK_URL = 'assets/meadow/character-v3.glb';
+// Heroes, best first: hero-v5.glb (Hunyuan3D 3.1, 500k triangles, ~26 MB) -> hero-v4.glb ->
+// hand-built character-v3.glb. `?walker=v4` / `?walker=v3` start further down the list.
+// `v` in the v5 URL is the build id: bump it with every new hero-v5.glb so HTTP caches refetch.
+const HEROES = {
+    v5: { url: 'assets/meadow/hero-v5.glb?v=5.1', bytes: 26260984 },
+    v4: { url: 'assets/meadow/hero-v4.glb', bytes: 1862576 },
+  },
+  FALLBACK_URL = 'assets/meadow/character-v3.glb',
+  wantWalker = new URLSearchParams(location.search).get('walker'),
+  heroChain = wantWalker === 'v3' ? [] : wantWalker === 'v4' ? ['v4'] : ['v5', 'v4'];
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const map = (x, y) => new T.Vector3((x / 100 - 0.5) * W, 0, ((y / 100 - 0.5) * H) / Math.SQRT1_2);
 let rig,
@@ -48,6 +56,70 @@ function scheduleBlink() {
 const stage = document.createElement('div');
 stage.id = 'grounded-stage';
 world.insertBefore(stage, world.querySelector('#tree-place'));
+
+// ---- Hero download with progress. It starts in the background once the page is idle (before
+// 「去走走」 is pressed) and relies on normal HTTP caching for repeat visits.
+const loadBox = document.createElement('div');
+loadBox.id = 'hero-loading';
+loadBox.hidden = true;
+loadBox.setAttribute('role', 'progressbar');
+loadBox.setAttribute('aria-label', '正在加载角色');
+loadBox.setAttribute('aria-valuemin', '0');
+loadBox.setAttribute('aria-valuemax', '100');
+loadBox.innerHTML = '<span class="hero-loading-text"></span><span class="hero-loading-bar"><i></i></span>';
+stage.append(loadBox);
+const downloads = {},
+  progress = { id: null, value: 0 };
+function showProgress() {
+  const pc = Math.floor(progress.value * 100);
+  loadBox.querySelector('.hero-loading-text').textContent = '正在加载角色… ' + pc + '%';
+  loadBox.querySelector('i').style.transform = 'scaleX(' + progress.value.toFixed(3) + ')';
+  loadBox.setAttribute('aria-valuenow', String(pc));
+}
+function download(id, background = false) {
+  if (downloads[id]) return downloads[id];
+  const { url, bytes } = HEROES[id],
+    p = (async () => {
+      // background preload: low priority, so the lawn and page images still come first
+      const r = await fetch(url, background ? { priority: 'low' } : {});
+      if (!r.ok) throw Error(url + ' ' + r.status);
+      // Content-Length can be the compressed size, so the known size is only a fallback.
+      const total = Number(r.headers.get('content-length')) || bytes;
+      if (!r.body) return r.arrayBuffer();
+      const reader = r.body.getReader(),
+        parts = [];
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        got += value.length;
+        if (progress.id === id) {
+          progress.value = Math.min(0.99, got / total);
+          if (!loadBox.hidden) showProgress();
+        }
+      }
+      const buf = new Uint8Array(got);
+      let o = 0;
+      for (const part of parts) {
+        buf.set(part, o);
+        o += part.length;
+      }
+      return buf.buffer;
+    })();
+  p.catch(() => {}); // failures are handled where the hero is parsed (fallback)
+  return (downloads[id] = p);
+}
+function preload() {
+  if (!heroChain.length || navigator.connection?.saveData) return;
+  // the lazy lawn image first (small), so the walk view is painted while the hero still streams
+  const lawn = document.querySelector('.walk-ground');
+  if (lawn) lawn.loading = 'eager';
+  progress.id = heroChain[0];
+  download(heroChain[0], true);
+}
+if (document.readyState === 'complete') setTimeout(preload, 300);
+else addEventListener('load', () => (window.requestIdleCallback ? requestIdleCallback(preload, { timeout: 1500 }) : setTimeout(preload, 300)));
 document.querySelector('#walker').hidden = true;
 function hidden() {
   return (
@@ -102,7 +174,7 @@ async function activate() {
   }
   if (loading) return;
   loading = true;
-  hint.textContent = '正在准备人物…';
+  hint.textContent = heroChain.length ? '' : '正在准备人物…';
   try {
     renderer = new T.WebGLRenderer({ alpha: true, antialias: true });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
@@ -144,22 +216,33 @@ async function activate() {
     scene.add(ground);
     blob = contactShadow();
     scene.add(blob);
-    // Anime-style hero (hero-v4.glb, built from the painted turnaround) with the hand-built
-    // character-v3.glb as fallback: `?walker=v3` forces it, and it loads if v4 fails.
-    const loader = new GLTFLoader(),
-      wantV3 = new URLSearchParams(location.search).get('walker') === 'v3';
-    let gltf,
-      hero = false;
-    if (!wantV3) {
+    // Anime-style hero (hero-v5.glb, else hero-v4.glb) with the hand-built character-v3.glb as
+    // the last fallback. A progress bar shows while the hero is still downloading.
+    const loader = new GLTFLoader();
+    let gltf = null,
+      kind = 'v3';
+    for (const id of heroChain) {
+      if (progress.id !== id) {
+        progress.id = id;
+        progress.value = 0;
+      }
+      showProgress();
+      loadBox.hidden = false;
       try {
-        gltf = await loader.loadAsync(HERO_URL);
-        hero = true;
+        const buf = await download(id);
+        progress.value = 1;
+        showProgress();
+        gltf = await loader.parseAsync(buf, '');
+        kind = id;
+        break;
       } catch (e) {
         gltf = null;
       }
     }
+    loadBox.hidden = true;
     if (!gltf) gltf = await loader.loadAsync(FALLBACK_URL);
-    stage.dataset.walker = hero ? 'v4' : 'v3';
+    const hero = kind !== 'v3';
+    stage.dataset.walker = kind;
     const sunView = sun.position.clone().normalize().transformDirection(camera.matrixWorldInverse);
     const meshes = [];
     gltf.scene.traverse(o => {
@@ -395,6 +478,10 @@ window.GroundedWalker = {
   },
   get blinks() {
     return !!eyes;
+  },
+  // Hero download state for tests: { id: 'v5' | 'v4' | null, value: 0..1 }.
+  get loading() {
+    return { ...progress, visible: !loadBox.hidden };
   },
   // For screenshots/tests: hold the eyelids at `v` (0 open .. 1 closed; null resumes blinking).
   holdBlink(v) {

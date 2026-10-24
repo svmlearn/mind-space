@@ -21,7 +21,7 @@ def fill_from(img_,known,todo,iters=80,k=5):
         bs=cv2.blur(acc,(k,k)); bm=cv2.blur(m,(k,k))
         g=todo&(bm>0.05); acc[g]=bs[g]/bm[g][:,None]; m[g]=1; todo&=~g
     o=img_.copy(); o[m>0]=acc[m>0].clip(0,255).astype(np.uint8); return o
-A=set(sys.argv[1].split(',')) if len(sys.argv)>1 else {'side','hand','shoe','hood','hair'}
+A=set(sys.argv[1].split(',')) if len(sys.argv)>1 else {'side','hand','shoe','hood','hair','finger'}
 H=hsv(out)
 skinT=v&(H[:,:,0]<25)&(H[:,:,1]>35)&(H[:,:,2]>90)
 # ---------------- A. side of the face
@@ -85,6 +85,40 @@ if 'hand' in A:
     Hn[:,:,0]=H[:,:,0]+(fh-hh); Hn[:,:,1]=H[:,:,1]*(fs_/hs_); Hn[:,:,2]=H[:,:,2]*(0.93*fv/hv)
     rec=cv2.cvtColor(np.clip(Hn,0,255).astype(np.uint8),cv2.COLOR_HSV2BGR).astype(np.float32)
     out=(out.astype(np.float32)*(1-wH[...,None])+rec*wH[...,None]).clip(0,255).astype(np.uint8)
+# ---------------- B2. (iter4) hands: clean dark specks, paint 3 soft finger separations on the
+# back of each hand so it reads as four fingers instead of a mitten
+H=hsv(out)
+if 'finger' in A:
+    o32=out.astype(np.float32)
+    for sgn in (-1,1):
+        hv_=handv&(np.sign(P3[:,0]+0.03)==sgn)
+        kd=cKDTree(P3[hv_]); dd,_=kd.query(pos[v],k=1)
+        near=np.zeros(v.shape,bool); near[v]=dd<0.012
+        near&=(y<1.0)&(y>0.62)
+        sk=near&(H[:,:,0]<25)&(H[:,:,1]>30)&(H[:,:,2]>110)
+        hp=P3[hv_]; top=hp[:,1].max(); bot=hp[:,1].min()
+        bad=near&~sk&(y<top-0.05)&(H[:,:,2]<120)
+        if bad.any():
+            gi=np.argwhere(sk); bi=np.argwhere(bad); kd2=cKDTree(pos[sk]); _,nn=kd2.query(pos[bad],k=10)
+            o32[bi[:,0],bi[:,1]]=o32[gi[:,0],gi[:,1]][nn].mean(1)
+        hp=P3[hv_]; top=hp[:,1].max(); bot=hp[:,1].min()
+        knuck=bot+0.55*(top-bot)
+        outer=near&(nrm[...,0]*sgn>0.25)&(y<knuck)
+        # finger lanes across z, per height band (hand narrows towards the tips)
+        lines=np.zeros(v.shape,np.float32)
+        yb=np.round((y-bot)/0.01).astype(int)
+        for b_ in np.unique(yb[outer]):
+            m=outer&(yb==b_)
+            z0,z1=np.percentile(z[m],[4,96])
+            for i in (1,2,3):
+                zc=z0+(z1-z0)*i/4
+                lines[m]=np.maximum(lines[m],np.exp(-((z[m]-zc)/0.0055)**2))
+        fade=np.clip((knuck-y)/0.02,0,1)*np.clip((y-bot)/0.012,0,1)
+        lf=cv2.GaussianBlur((lines*fade*outer).astype(np.float32),(0,0),1.0)
+        k_=1-0.22*lf
+        o32*= np.where(near[...,None],k_[...,None],1)
+        print('finger lanes side',sgn,'texels',int((lines*fade>0.3).sum()),'bad',int(bad.sum()))
+    out=o32.clip(0,255).astype(np.uint8)
 # ---------------- C. turtleneck back/sides: remove the painted hood outline (thin dark arcs,
 # dots) but keep the broad shading and the knit grain
 H=hsv(out)

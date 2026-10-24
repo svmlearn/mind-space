@@ -11,13 +11,18 @@
 5. `step2_tex.py`：修贴图：裤子/毛衣/袖子上的灰白条纹、鞋底、偏黄的手、提亮；把正面原画投影到脸上（眼睛、微笑），边缘羽化。
 6. `step3_hood.py`：把背后的兜帽压平成高领毛衣的背面，并抹掉背后兜帽的画线。
 7. `step3b_face.py BANG EAR GAIN KA KB EYS`（当前 `0.05 0.8 0.9 1.98 2.32 1.18`）：让脸在游戏的俯视镜头下看得见。把额前刘海的前伸部分压回脸面（只压眼睛上方那一带，头顶蓬松轮廓保留），耳朵缩到 80%，背后兜帽边缘硬压平；用正面深度图找出仍盖在眼睛上的刘海贴图，用原画正脸重新投影并把眼睛在竖直方向拉长 1.18（抵消俯视压扁）；清理后颈暗点、袖口肤色点和极小 UV 面的取色错误。输出 `work/geom3.npz`、`atlas_final3.png`、`facew3.npy`（脸部权重）。刘海贴在额头的顶点写入顶点属性 `_OUTLINE`=0（描边在那里变细，免得眼睛上方一道黑线）。
-7b. `step3c_fix.py [passes]`（iter3，默认全部：`side,hand,shoe,hood,hair`；加 `dbg` 输出候选点调试模型）：读 `geom3/atlas_final3/tpos3`，输出 `work/geom4.npz`、`atlas_final4.png`、`tpos4.npz`。
+7b. `step3c_fix.py [passes]`（iter3/iter4，默认全部：`side,hand,shoe,hood,hair,finger`；加 `dbg` 输出候选点调试模型）：读 `geom3/atlas_final3/tpos3`，输出 `work/geom4.npz`、`atlas_final4.png`、`tpos4.npz`。
    - side：正面投影落到侧脸/太阳穴的黑色拖影和“贴纸眼”——按法线朝向（nz<0.5）和皮肤表面深度挑出侧面的暗色/低饱和像素，用 3D 近邻（cKDTree）从好皮肤（y≤1.70）或好头发（y>1.70）取色填平，再做一圈 3D 高斯平滑。眼睛只在正面到约 3/4 侧可见，正脸贴图不动。
    - hand：手的贴图色相/饱和度对齐脸部皮肤中位数（亮度 ×0.93），手的顶点以手腕为中心缩到 85%（靠近袖口处平滑过渡）。
    - shoe：y<0.26 的鞋子顶点按每只脚的鞋底中心在 x/z 缩到 86%、高度 92%，鞋底贴地，0.15–0.24 渐变回原样（裤脚不动）。
    - hood：颈后/肩背 y 1.12–1.62 的毛衣贴图用 3D 中值（48 邻点、半径 0.04）重建低频色 + 一半细纹理，去掉兜帽轮廓画线；后颈小暗点（含一块透出来的反面小三角的取色）用周围毛衣色填掉 → 读作高领毛衣。
+   - finger（iter4）：手背上画 3 条柔和的手指分界（四指），清掉手上的深色小点。
    - hair：后脑头发按绕头角度加三组正弦发丝明暗（±16%）、y≈2.02 一条柔和高光带，整体提亮约 10–15%。
 8. `step4_rig.py [headTilt headScale UP EB EF]`（当前 `0.2`，其余默认 1.08 / 1.12 / 0.20 / 0.50）：毛衣色相回到原画的青绿色、居中、缩放到 2 个单位高；按规则写蒙皮权重（头发全部跟头，袖子与躯干分开），骨骼名与 `grounded-rig.js` 一致，并把骨骼尾端（`extras.tail`）和步态参数（`GroundedHero.extras.gait`）写进 glTF，输出 `work/hero-v4.glb`（iter3 起读 `geom4/atlas_final4`；步态里新增 `armSwingGain=1.15`、`armSwingMax`=0.30×K，手臂与同侧腿反相摆动幅度约为 v3 的 2 倍；后脑头发的 emissive 额外 +0.10）。UP=1.12 把人物放大到 2.24 单位高（与 v3 在画面里的大小相当）。另写一张 emissive 贴图（glTF `emissiveTexture`：身体 0.20、脸/皮肤/耳/手 0.50 的暖色自发光，让脸在场景里够亮），以及 `GroundedHero.extras.eyes`（两只眼在绑定空间里的椭圆、z 下限和肤色），前端用来做眨眼。
+   - iter4：`step4_rig.py [headTilt headScale UP EB EF TE AU AF]`，后三个默认 `0.47 9 3`。手臂改成两节：`armL/R` 是上臂（肩→肘），新增 `forearmL/R`（肘→手，骨骼列表追加在末尾，旧骨骼名和顺序不变）。肘部在肩→手连线的 TE 处，权重沿袖子轴向在 ±0.06 内平滑过渡，手跟前臂走。
+   - 步态新增 `upperArm`/`foreArm`，即自然下垂时的上臂和前臂向量，外展角分别是 AU=9° 和 AF=3°；模型原本是约 23° 的 A 字手臂，这是“手臂斜着张开”的根因。另有 `elbowRest=0.14`、`elbowSwing=0.40`（rad），`armSwingMax` 改为 0.24×K。
+   - 毛衣下摆两侧在 y 0.80–1.06 往里收（只动躯干顶点，不动袖子），让手臂能贴着身体下垂。
+   - 法线在 UV 接缝处焊接：TRELLIS 的贴图分块把 54% 的顶点拆开了，焊接后接缝处不再有硬光影线和描边裂缝。
 
 `closeup.py` / `weights_vis.py` 是 Blender 4.5 无界面渲染检查用（`blender -b -P closeup.py -- <glb> <outprefix> "<name:az:el:cx:cy:cz:ortho;...>" 640`）。
 

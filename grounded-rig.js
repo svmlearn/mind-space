@@ -34,6 +34,11 @@ const DEFAULTS = {
   headTilt: 0, // chin-up pitch (radians) so the face reads from the high camera
   armSwingGain: 0.55, // arm swing per unit of foot offset (anti-phase with the same-side leg)
   armSwingMax: 0.17, // clamp of that swing (character units along the facing direction)
+  // Two-bone arms (only used when the model has optional `forearmL/R` bones, e.g. hero-v4):
+  upperArm: null, // [out, down] shoulder -> elbow while hanging relaxed
+  foreArm: null, // [out, down] elbow -> hand while hanging relaxed
+  elbowRest: 0.12, // relaxed elbow bend (radians, forearm forwards)
+  elbowSwing: 0.45, // extra bend at the front of the swing (none at the back)
 };
 
 /*
@@ -124,6 +129,21 @@ export class GroundedRig {
         .invert()
         .multiply(bone.matrixWorld.clone().setPosition(0, 0, 0));
     }
+    // Optional forearm bones (elbows). Without them (character-v3) `arm` spans shoulder -> hand.
+    this.elbows = ['L', 'R'].every(s => Array.isArray(model.getObjectByName('forearm' + s)?.userData?.tail)) && !!c.upperArm && !!c.foreArm;
+    if (this.elbows)
+      for (const s of ['L', 'R']) {
+        const n = 'forearm' + s,
+          bone = model.getObjectByName(n),
+          h = bone.position.clone().applyMatrix4(bone.parent.matrixWorld),
+          t = V(...bone.userData.tail).applyMatrix4(bone.parent.matrixWorld);
+        this.bones[n] = bone;
+        this.length[n] = h.distanceTo(t);
+        this.correction[n] = frame(h, t, 0)
+          .setPosition(0, 0, 0)
+          .invert()
+          .multiply(bone.matrixWorld.clone().setPosition(0, 0, 0));
+      }
     this.pose();
   }
   setTarget(p, moving) {
@@ -371,11 +391,24 @@ export class GroundedRig {
           .clone()
           .add(this.rot(V(Math.sign(x) * c.shoulder[0], c.shoulder[1], 0)))
           .addScaledVector(fw, lean * 0.8);
-      this.setBone(
-        'arm' + side,
-        sh,
-        sh.clone().add(this.rot(V(Math.sign(x) * (c.arm[0] - 0.02 * walk), c.arm[1] + Math.abs(armSwing) * 0.15, armSwing))),
-      );
+      if (this.elbows) {
+        // Hanging arm, swinging fore/aft about the shoulder's side axis (sagittal plane only);
+        // the elbow bends more at the front of the swing and almost straightens at the back.
+        const len = Math.hypot(...c.upperArm) + Math.hypot(...c.foreArm),
+          a = Math.asin(clamp(armSwing / len, -0.9, 0.9)),
+          front = Math.max(0, a) / Math.asin(Math.min(0.9, c.armSwingMax / len)),
+          bend = c.elbowRest * (1 - 0.4 * walk * Math.max(0, -a / 0.3)) + c.elbowSwing * walk * front,
+          dir = ([ox, oy], ang) => V(Math.sign(x) * ox, oy * Math.cos(ang), -oy * Math.sin(ang)),
+          elbow = sh.clone().add(this.rot(dir(c.upperArm, a))),
+          hand = elbow.clone().add(this.rot(dir(c.foreArm, a + bend)));
+        this.setBone('arm' + side, sh, elbow);
+        this.setBone('forearm' + side, elbow, hand);
+      } else
+        this.setBone(
+          'arm' + side,
+          sh,
+          sh.clone().add(this.rot(V(Math.sign(x) * (c.arm[0] - 0.02 * walk), c.arm[1] + Math.abs(armSwing) * 0.15, armSwing))),
+        );
     }
     this.model.updateMatrixWorld(true);
     this.placeHolder();
